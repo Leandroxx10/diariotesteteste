@@ -1,0 +1,55 @@
+# Relatório de validação técnica
+
+## Estrutura verificada
+
+- Projeto convertido para Vite.
+- Aplicativo principal removido do `iframe`.
+- Tailwind compilado localmente.
+- Cliente Supabase instalado por pacote.
+- Manifesto PWA e service worker incluídos.
+- Ícones do aplicativo gerados em múltiplos tamanhos.
+- Configuração do Netlify incluída.
+- Migração final de segurança incluída.
+- Script SQL completo para configuração do banco incluído.
+- Wrapper Electron e workflow Windows incluídos.
+
+## Melhorias de carregamento
+
+- Miniatura separada da foto completa.
+- Tela inicial sem histórico completo de ocorrências.
+- Contagem de ocorrências calculada no banco.
+- Histórico solicitado somente para o molde aberto.
+- Fotos completas de ocorrências hidratadas por proximidade da tela.
+- Compressão de fotos novas.
+- Cache local sem reter anexos grandes quando não há alteração pendente.
+
+## Segurança aplicada
+
+- Removida senha compartilhada fixa do navegador.
+- Edição vinculada a Supabase Auth.
+- Escrita anônima revogada na migração final.
+- Chaves lidas por variáveis de ambiente.
+- URLs e dados importados normalizados antes do uso.
+- App Electron sem Node.js exposto à página, com sandbox e navegação externa bloqueada.
+
+## Validações automatizadas
+
+Use `npm run check`. O comando executa validação de fonte, build do Vite e validação do conteúdo de `dist`.
+
+## Limitações conhecidas
+
+- Instalação PWA exige autorização do usuário; não existe instalação silenciosa por link.
+- iPhone/iPad usa o menu Compartilhar > Adicionar à Tela de Início.
+- Anexos ainda são armazenados dentro do registro JSON; bases muito grandes devem evoluir para Supabase Storage.
+- O instalador Windows deve ser assinado com certificado de publicação para eliminar avisos de editor desconhecido do Windows. O projeto gera o executável, mas não inclui certificado comercial.
+
+## Resultado executado nesta entrega
+
+- `npm ci` em cópia limpa: aprovado.
+- `npm run check`: aprovado.
+- Build de produção com configuração pública do Supabase original: aprovado.
+- Teste HTTP de `index.html`, manifesto, service worker e ícone: aprovado.
+- `npm audit` do aplicativo web: 0 vulnerabilidades encontradas.
+- `npm audit` das dependências desktop: 0 vulnerabilidades encontradas.
+- Sintaxe do processo principal Electron: aprovada.
+- Geração local do `.exe`: não executada neste ambiente Linux porque o runtime Windows do Electron não pôde ser baixado. O workflow `build-windows.yml` está pronto para gerar o instalador em uma máquina Windows do GitHub Actions.

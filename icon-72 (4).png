@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#172554" />
+  <meta name="description" content="Diário de Moldes WMoldes para acompanhamento de produção e registro de ocorrências." />
+  <meta name="application-name" content="Diário de Moldes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Diário de Moldes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta property="og:title" content="Diário de Moldes - WMoldes" />
+  <meta property="og:description" content="Acompanhamento de produção e registro de ocorrências de moldes industriais." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/icons/icon-512.png" />
+  <title>Diário de Moldes - WMoldes</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+  <script type="module" crossorigin src="/assets/index-Dcy7JywE.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BCJBXUJl.css">
+</head>
+<body class="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800">
+
+  <!-- HEADER PRINCIPAL -->
+  <header class="bg-gradient-to-r from-blue-950 to-blue-900 text-white shadow-md border-b-4 border-orange-500 sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center gap-4">
+      
+      <!-- Contentor do Logótipo e Título -->
+      <div class="flex items-center gap-3 sm:gap-4 w-full sm:w-auto min-w-0">
+        <div id="logo-container" class="bg-white p-2 rounded-xl shadow-md flex items-center justify-center h-12 w-24 sm:h-16 sm:w-36 overflow-hidden transition-all duration-300 hover:scale-105 border border-slate-200 shrink-0">
+          <img 
+            src="/icons/icon-192.png" 
+            alt="Logótipo WMoldes" 
+            class="h-full w-full object-contain"
+            onerror="fallbackLogo()"
+          />
+        </div>
+
+        <div class="h-10 w-[1px] bg-blue-700 hidden sm:block"></div>
+        <div class="min-w-0">
+          <h1 class="text-lg sm:text-2xl font-bold tracking-tight truncate">Diário de Moldes</h1>
+          <p class="text-[11px] sm:text-xs text-blue-200 font-medium truncate">Acompanhamento de produção</p>
+          <p id="sync-status" class="text-[10px] text-blue-200/80 truncate" aria-live="polite">Carregando dados...</p>
+        </div>
+      </div>
+
+      <!-- Botões de Ação no Cabeçalho -->
+      <div class="flex w-full sm:w-auto items-center gap-2 sm:gap-3 flex-wrap sm:flex-nowrap">
+        <button
+          id="btn-add-mold"
+          onclick="openNewMoldModal()"
+          class="flex-1 sm:flex-none bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white px-4 sm:px-5 py-2.5 rounded-lg font-semibold text-sm transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          <span>Adicionar prefixo</span>
+        </button>
+        <button
+          onclick="exportData()"
+          title="Descarregar uma cópia de segurança das alterações"
+          class="flex-1 sm:flex-none bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white px-4 sm:px-5 py-2.5 rounded-lg font-semibold text-sm transition-all duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+          <span>Salvar alterações</span>
+        </button>
+        <button
+          id="btn-import"
+          onclick="document.getElementById('import-file-input').click()"
+          title="Carregar cópia de segurança"
+          class="shrink-0 bg-white/10 hover:bg-white/20 text-white px-3 py-2.5 rounded-lg font-semibold text-sm transition-all duration-200 border border-white/20 flex items-center justify-center"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5-5m0 0l5 5m-5-5v12"/></svg>
+        </button>
+        <input id="import-file-input" type="file" accept="application/json" class="hidden" onchange="importData(event)" />
+        <button
+          id="btn-install"
+          type="button"
+          class="hidden shrink-0 bg-white text-blue-950 hover:bg-blue-50 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all duration-200 border border-white/30 items-center justify-center gap-2"
+          title="Instalar Diário de Moldes"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0l4-4m-4 4l-4-4M5 17v2a2 2 0 002 2h10a2 2 0 002-2v-2"/></svg>
+          <span>Instalar</span>
+        </button>
+        <button
+          id="btn-auth"
+          onclick="toggleAuth()"
+          class="shrink-0 bg-white/10 hover:bg-white/20 text-white px-3 py-2.5 rounded-lg font-semibold text-sm transition-all duration-200 border border-white/20 flex items-center justify-center gap-2"
+          title="Entrar / Sair"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12H3m0 0l4-4m-4 4l4 4m6-12h4a2 2 0 012 2v12a2 2 0 01-2 2h-4"/></svg>
+          <span id="btn-auth-label">Entrar</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- CONTEÚDO PRINCIPAL -->
+  <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6 sm:px-6 lg:px-8">
+    
+    <!-- ================= TELA 1: LISTA DE MOLDES (GRID) ================= -->
+    <div id="screen-list" class="space-y-6">
+      
+      <!-- Barra de Pesquisa -->
+      <div class="max-w-xl">
+        <div class="relative">
+          <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          </span>
+          <input
+            type="text"
+            id="search-input"
+            oninput="handleSearch(this.value)"
+            placeholder="Procurar moldes por nome ou defeito (ex: Costura)..."
+            class="w-full pl-11 pr-4 py-3 rounded-xl border border-slate-200 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-slate-700 text-sm transition-all"
+          />
+        </div>
+      </div>
+
+      <!-- Grelha de Cards de Moldes -->
+      <div id="mold-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        <!-- Injetado via Javascript -->
+      </div>
+
+    </div>
+
+    <!-- ================= TELA 2: DETALHES DO MOLDE E DIÁRIO DE OCORRÊNCIAS ================= -->
+    <div id="screen-detail" class="space-y-6 hidden">
+      
+      <!-- Cabeçalho de Retorno -->
+      <div class="flex items-center justify-between border-b border-slate-200 pb-4">
+        <button
+          onclick="goBackToList()"
+          class="flex items-center gap-2 text-blue-900 hover:text-orange-500 font-semibold text-sm transition-colors"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"/></svg>
+          Voltar para a Lista de Moldes
+        </button>
+        <div class="text-xs text-slate-500">
+          A visualizar histórico do Molde: <strong id="detail-header-name" class="text-slate-800"></strong>
+        </div>
+      </div>
+
+      <!-- Banner de Resumo do Molde Selecionado -->
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col md:flex-row gap-6">
+        <div id="detail-mold-images" class="w-full md:w-1/3 lg:w-2/5 flex-shrink-0 grid grid-cols-3 gap-2">
+          <!-- Imagens injectadas dinamicamente (até 3) -->
+        </div>
+
+        <div class="flex-1 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <span class="bg-orange-500 text-white text-xs px-2.5 py-1 rounded font-bold uppercase tracking-wider">MOLDE ATIVO</span>
+              <span id="detail-mold-id" class="text-xs text-slate-400"></span>
+            </div>
+            <h2 id="detail-mold-name" class="text-3xl font-extrabold text-blue-950 mb-3"></h2>
+            <p class="text-slate-500 text-xs mb-4 flex items-center gap-1.5">
+              <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              Ficheiro de Referência: <span id="detail-image-name" class="font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200"></span>
+            </p>
+
+            <div class="space-y-1.5">
+              <span class="text-xs font-bold text-slate-400 uppercase block">Defeitos Mapeados neste Molde</span>
+              <div id="detail-tags-container" class="flex flex-wrap gap-1.5">
+                <!-- Tags inseridas dinamicamente -->
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-6 md:mt-0 flex flex-wrap gap-3">
+            <button
+              onclick="openNewOccurrenceModal()"
+              class="bg-orange-500 hover:bg-orange-600 text-white px-5 py-2.5 rounded-lg font-bold text-sm shadow-md hover:shadow-lg transition flex items-center gap-2"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+              Registrar Nova Ocorrência
+            </button>
+            <button
+              onclick="openEditMoldModal(selectedMoldId)"
+              class="bg-slate-700 hover:bg-slate-800 text-white px-5 py-2.5 rounded-lg font-bold text-sm shadow-md hover:shadow-lg transition flex items-center gap-2"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+              Editar Molde
+            </button>
+            <button
+              id="btn-datasheet"
+              onclick="handleDatasheetClick()"
+              class="bg-blue-900 hover:bg-blue-800 text-white px-5 py-2.5 rounded-lg font-bold text-sm shadow-md hover:shadow-lg transition flex items-center gap-2"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+              <span id="btn-datasheet-label">Ficha do Equipamento</span>
+            </button>
+            <button
+              id="btn-datasheet-remove"
+              onclick="removeMoldDatasheet()"
+              class="hidden bg-white hover:bg-red-50 text-red-600 border border-red-200 px-3 py-2.5 rounded-lg font-bold text-sm transition flex items-center gap-1"
+              title="Remover ficha anexada"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Secção de Lista de Ocorrências e Barra Lateral -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- Bloco de Histórico -->
+        <div class="lg:col-span-2 space-y-4">
+          <div class="flex items-center gap-2 mb-4">
+            <svg class="w-5 h-5 text-blue-950" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <h3 class="text-lg font-bold text-blue-950">Histórico de Ocorrências</h3>
+            <span id="occurrence-badge-count" class="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-0.5 rounded-full">0</span>
+          </div>
+
+          <!-- Gráficos do molde (2 imagens) -->
+          <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200">
+            <h4 class="text-sm font-bold text-blue-950 mb-3 flex items-center gap-2">
+              <span class="p-1.5 bg-orange-100 rounded text-orange-600">📊</span>
+              Gráficos de Análise
+            </h4>
+            <div id="detail-charts" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+          </div>
+
+          <div id="occurrences-list-container" class="space-y-4">
+            <!-- Injetado dinamicamente -->
+          </div>
+        </div>
+
+        <!-- Coluna Lateral Informativa -->
+        <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 h-fit space-y-4">
+          <div class="border-b border-slate-100 pb-3">
+            <h3 class="font-bold text-blue-950 flex items-center gap-2 text-md">
+              <span class="p-1.5 bg-orange-100 rounded text-orange-600">📌</span>
+              Instruções de Diário
+            </h3>
+          </div>
+          <div class="text-xs text-slate-500 space-y-2 leading-relaxed">
+            <p>Mantenha o histórico do molde sempre em dia para garantir elevados padrões de injeção:</p>
+            <ul class="list-disc pl-4 space-y-1">
+              <li>Fotografe o desvio na máquina de forma clara e visível.</li>
+              <li>Atribua a classificação de defeito correta para facilitar a análise de dados futura.</li>
+              <li>Descreva no campo de observações todas as afinações imediatas efetuadas no processo.</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="bg-blue-950 text-slate-400 border-t border-blue-900 py-6 mt-12 text-center text-xs">
+    <p class="font-semibold text-slate-300">© 2026 - Diário de Moldes - Todos os direitos reservados.</p>
+    <p class="mt-1">Desenvolvido com foco em Qualidade, Rastreabilidade e Performance Industrial.</p>
+  </footer>
+
+  <!-- ================= MODAL: ADICIONAR NOVO MOLDE ================= -->
+  <div id="modal-new-mold" class="fixed inset-0 bg-blue-950/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto hidden">
+    <div class="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in duration-200">
+      
+      <div class="bg-blue-900 text-white px-6 py-4 flex justify-between items-center border-b-2 border-orange-500">
+        <h3 id="new-mold-modal-title" class="text-lg font-bold flex items-center gap-2">
+          <svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+          <span id="new-mold-modal-title-text">Cadastrar Novo Molde</span>
+        </h3>
+        <button onclick="closeNewMoldModal()" class="text-slate-200 hover:text-white bg-blue-950/40 p-1.5 rounded-full transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <form onsubmit="handleCreateMold(event)" class="p-6 space-y-4">
+        <div>
+          <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Nome do Item *</label>
+          <input
+            type="text"
+            id="new-mold-name"
+            placeholder="Ex: MB 1530"
+            required
+            class="w-full px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800"
+          />
+        </div>
+
+        <!-- Upload de Imagens do Molde (até 3) -->
+        <div>
+          <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Fotos do Molde (até 3)</label>
+          <div class="flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-200 rounded-xl hover:bg-slate-50 transition cursor-pointer relative">
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onchange="processImageUpload(event, 'mold')"
+              class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+            />
+            <svg class="w-8 h-8 text-slate-400 mb-2 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 11-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="text-xs font-bold text-slate-600 pointer-events-none">Carregar Imagens de Referência</span>
+            <span class="text-[10px] text-slate-400 mt-1 pointer-events-none">A primeira imagem aparece no card. Limite: 3.</span>
+          </div>
+
+          <!-- Grelha de antevisão (até 3 imagens) -->
+          <div id="new-mold-preview-grid" class="mt-3 grid grid-cols-3 gap-2"></div>
+        </div>
+
+        <!-- Defeitos a monitorizar na criação do molde -->
+        <div>
+          <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Defeitos a Monitorar (Tags)</label>
+          <div class="flex gap-2 mb-3">
+            <input
+              type="text"
+              id="new-mold-tag-text"
+              placeholder="Adicionar defeito (ex: H+, Costura)"
+              class="flex-1 px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
+              onkeydown="if(event.key === 'Enter') { event.preventDefault(); addCustomTagToDraft(); }"
+            />
+            <select
+              id="new-mold-tag-color"
+              class="px-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+            >
+              <option value="dark-gray">Cinza Escuro</option>
+              <option value="orange">Laranja</option>
+            </select>
+            <button
+              type="button"
+              onclick="addCustomTagToDraft()"
+              class="bg-blue-900 hover:bg-blue-950 text-white text-xs px-3 py-1.5 rounded-lg font-bold"
+            >
+              +
+            </button>
+          </div>
+
+          <!-- Contentor de Tags adicionadas -->
+          <div id="new-mold-tags-container" class="flex flex-wrap gap-1.5 p-2 bg-slate-50 rounded-lg border border-slate-150 min-h-[40px]">
+            <span class="text-[10px] text-slate-400 italic">Nenhuma tag adicionada. O molde será criado sem defeitos a monitorar.</span>
+          </div>
+        </div>
+
+        <div class="flex gap-3 justify-end pt-4 border-t border-slate-100">
+          <button
+            type="button"
+            onclick="closeNewMoldModal()"
+            class="px-4 py-2 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-semibold text-slate-600 transition"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            id="new-mold-submit-btn"
+            class="px-5 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-xs font-bold shadow-md transition"
+          >
+            Cadastrar Molde
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: REGISTRAR NOVA OCORRÊNCIA (MODAL COMPLETO ROLÁVEL) ================= -->
+  <div id="modal-new-occurrence" class="fixed inset-0 bg-blue-950/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto hidden">
+    <div class="bg-white rounded-2xl max-w-lg w-full my-8 shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in duration-200 flex flex-col max-h-[90vh]">
+      
+      <div class="bg-blue-900 text-white px-6 py-4 flex justify-between items-center border-b-2 border-orange-500 flex-shrink-0">
+        <h3 class="text-md font-bold flex items-center gap-2">
+          <svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          <span id="occ-modal-title-text">Registrar Ocorrência:</span> <span id="occ-modal-mold-name"></span>
+        </h3>
+        <button onclick="closeNewOccurrenceModal()" class="text-slate-200 hover:text-white bg-blue-950/40 p-1.5 rounded-full transition" title="Fechar formulário">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <form onsubmit="handleCreateOccurrence(event)" class="flex flex-col flex-1 overflow-hidden">
+        <div class="p-6 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
+          
+          <!-- Máquina -->
+          <div>
+            <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Máquina / Equipamento *</label>
+            <input
+              type="text"
+              id="occ-machine"
+              placeholder="Ex: Injetora 04 - Setor A"
+              required
+              class="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 bg-white"
+            />
+          </div>
+
+          <!-- Data -->
+          <div>
+            <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Data do Ocorrido *</label>
+            <input
+              type="date"
+              id="occ-date"
+              required
+              class="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 bg-white"
+            />
+          </div>
+
+          <!-- Tipo de Defeito (Seletor ou Customizado) -->
+          <div>
+            <div class="flex justify-between items-center mb-1">
+              <label class="block text-xs font-bold text-slate-600 uppercase">Tipo de Defeito *</label>
+              <button
+                type="button"
+                id="occ-toggle-defect-btn"
+                onclick="toggleCustomDefectForm()"
+                class="text-xs text-orange-600 hover:text-orange-700 font-bold flex items-center gap-1 transition"
+              >
+                + Nova Nomenclatura
+              </button>
+            </div>
+
+            <!-- Select de Defeitos Cadastrados -->
+            <div id="occ-select-defect-wrapper">
+              <select
+                id="occ-defect-select"
+                class="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-slate-800"
+              >
+                <!-- Preenchido dinamicamente com base nas tags do molde -->
+              </select>
+            </div>
+
+            <!-- Contentor de Defeito Customizado (Escondido por padrão) -->
+            <div id="occ-custom-defect-wrapper" class="space-y-2.5 p-3 bg-orange-50 rounded-lg border border-orange-100 transition-all hidden">
+              <div>
+                <label class="block text-[10px] font-bold text-orange-950 mb-1">Nome do Novo Defeito</label>
+                <input
+                  type="text"
+                  id="occ-custom-defect-name"
+                  placeholder="Ex: Rebarba Excessiva, Empenamento"
+                  class="w-full px-3 py-1.5 text-xs border border-orange-200 rounded focus:outline-none focus:ring-2 focus:ring-orange-500 bg-white text-slate-800"
+                />
+              </div>
+
+              <div>
+                <label class="block text-[10px] font-bold text-orange-950 mb-1">Cor de Destaque da Tag</label>
+                <select
+                  id="occ-custom-defect-color"
+                  class="w-full px-2 py-1 text-xs border border-orange-200 rounded focus:outline-none focus:ring-1 focus:ring-orange-500 bg-white text-slate-800"
+                >
+                  <option value="bg-slate-700 text-white">Cinza Escuro</option>
+                  <option value="bg-orange-600 text-white font-semibold">Laranja</option>
+                </select>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="occ-save-to-tags"
+                  checked
+                  class="h-3.5 w-3.5 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                />
+                <label for="occ-save-to-tags" class="text-[11px] text-orange-950 cursor-pointer font-medium select-none">
+                  Vincular permanentemente ao molde
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Descrição -->
+          <div>
+            <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Descrição do Item & Ocorrência *</label>
+            <textarea
+              id="occ-description"
+              placeholder="Descreva detalhadamente o comportamento do molde, desvios detectados no ferramental e quaisquer correções de processo realizadas..."
+              required
+              rows="4"
+              class="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 bg-white"
+            ></textarea>
+          </div>
+
+          <!-- Upload de Foto de Evidência -->
+          <div>
+            <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Fotos da Ocorrência (Evidência Física) — pode anexar várias</label>
+            <div class="flex flex-col items-center gap-2 p-3 border-2 border-dashed border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer relative">
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onchange="processImageUpload(event, 'occurrence')"
+                class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+              />
+              <svg class="w-6 h-6 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 11-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              <span class="text-xs text-slate-500 font-semibold pointer-events-none">Anexar Foto(s) de Evidência</span>
+            </div>
+
+            <div id="occ-preview-grid" class="mt-2 grid grid-cols-3 gap-2"></div>
+          </div>
+
+        </div>
+
+        <!-- Rodapé Fixo de Ações -->
+        <div class="flex gap-3 justify-end px-6 py-4 border-t border-slate-150 bg-slate-50 flex-shrink-0">
+          <button
+            type="button"
+            onclick="closeNewOccurrenceModal()"
+            class="px-4 py-2 border border-slate-200 hover:bg-slate-100 rounded-lg text-xs font-semibold text-slate-600 transition"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            id="occ-submit-btn"
+            class="px-5 py-2 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-xs font-bold shadow-md hover:shadow-lg transition-all"
+          >
+            Salvar Ocorrência
+          </button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+
+  <!-- ================= MODAL: DIÁLOGO DE CONFIRMAÇÃO PERSONALIZADO (AZUL E LARANJA) ================= -->
+  <div id="modal-confirm" class="fixed inset-0 bg-blue-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-[110] animate-in fade-in duration-150 hidden">
+    <div class="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-150 overflow-hidden transform animate-in scale-in duration-150">
+      <div class="bg-orange-500 text-white p-4 flex items-center gap-3">
+        <svg class="w-6 h-6 flex-shrink-0 animate-bounce" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        <h3 id="confirm-title" class="font-bold text-lg">Excluir?</h3>
+      </div>
+      <div class="p-6">
+        <p id="confirm-message" class="text-slate-600 text-sm leading-relaxed">Tem certeza que deseja prosseguir com esta ação?</p>
+        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-slate-100">
+          <button
+            type="button"
+            onclick="closeConfirmModal()"
+            class="px-4 py-2 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-semibold text-slate-600 transition"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            id="confirm-submit-btn"
+            class="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs shadow-md transition"
+          >
+            Sim, Excluir
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: VISUALIZADOR DE IMAGEM EM TELA CHEIA (LIGHTBOX) ================= -->
+  <div 
+    id="modal-lightbox" 
+    class="fixed inset-0 bg-black/95 backdrop-blur-md flex flex-col items-center justify-center p-4 z-[120] animate-in fade-in duration-200 cursor-zoom-out hidden"
+    onclick="closeLightbox()"
+  >
+    <button 
+      class="absolute top-4 right-4 text-white hover:text-orange-500 bg-white/10 hover:bg-white/20 p-2.5 rounded-full transition-all duration-200 z-[130]"
+      onclick="closeLightbox()"
+      title="Fechar Visualização"
+    >
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+
+    <div class="relative max-w-full max-h-[85vh] flex items-center justify-center">
+      <img 
+        id="lightbox-img"
+        src="" 
+        alt="Visualização ampliada" 
+        class="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl border-2 border-white/10 select-none"
+        onclick="event.stopPropagation()"
+      />
+    </div>
+
+    <p class="text-white/60 text-xs mt-4 tracking-wider">Clique fora da imagem ou no botão superior para fechar</p>
+  </div>
+
+  <!-- ================= MODAL: VISUALIZADOR DE PDF ================= -->
+  <div id="modal-pdf" class="fixed inset-0 bg-black/90 backdrop-blur-md items-center justify-center p-3 z-[125] hidden">
+    <div class="w-full max-w-5xl h-[90vh] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div class="bg-blue-900 text-white px-4 py-2.5 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 min-w-0">
+          <svg class="w-5 h-5 text-orange-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          <span id="pdf-viewer-title" class="text-sm font-semibold truncate">Documento PDF</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <a id="pdf-viewer-download" href="#" download class="text-xs bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-md font-semibold">Baixar</a>
+          <button onclick="closePdfViewer()" class="bg-white/10 hover:bg-white/20 p-1.5 rounded-full" title="Fechar">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+      <iframe id="pdf-viewer-frame" src="" class="flex-1 w-full bg-slate-100" title="Visualização do PDF"></iframe>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: LOGIN ================= -->
+  <div id="modal-login" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-[140]">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+      <div class="bg-slate-800 text-white px-6 py-4 flex items-center justify-between">
+        <div>
+          <h3 class="font-bold text-lg">Acesso Restrito</h3>
+          <p class="text-xs text-slate-300">Entre para adicionar ou editar informações</p>
+        </div>
+        <button onclick="closeLoginModal()" class="text-slate-200 hover:text-white bg-white/10 p-1.5 rounded-full">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <form onsubmit="handleLogin(event)" class="p-6 space-y-4">
+        <div>
+          <label class="block text-xs font-bold text-slate-600 uppercase mb-1">E-mail</label>
+          <input id="login-user" type="email" autocomplete="username" inputmode="email" placeholder="usuario@empresa.com" required class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-600 uppercase mb-1">Senha</label>
+          <input id="login-pass" type="password" autocomplete="current-password" required class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+        </div>
+        <p id="login-error" class="text-xs text-red-600 hidden">E-mail ou senha incorretos.</p>
+        <div class="flex justify-end gap-2 pt-2">
+          <button type="button" onclick="closeLoginModal()" class="px-4 py-2 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-100">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg text-sm font-semibold bg-orange-500 hover:bg-orange-600 text-white shadow">Entrar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Convite de instalação: o navegador só instala após autorização do utilizador. -->
+  <div id="install-banner" class="hidden fixed left-3 right-3 bottom-3 sm:left-auto sm:right-5 sm:w-[390px] z-[160] bg-white border border-blue-200 rounded-2xl shadow-2xl p-4">
+    <div class="flex gap-3 items-start">
+      <img src="/icons/icon-96.png" alt="Ícone Diário de Moldes" class="w-14 h-14 rounded-xl border border-slate-200 shrink-0" />
+      <div class="min-w-0 flex-1">
+        <p class="font-bold text-blue-950">Instalar Diário de Moldes</p>
+        <p class="text-xs text-slate-600 mt-1">Abre em janela própria, com ícone no celular, no menu Iniciar e na barra de tarefas.</p>
+        <div class="mt-3 flex gap-2 justify-end">
+          <button id="install-dismiss" type="button" class="px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Agora não</button>
+          <button id="install-confirm" type="button" class="px-4 py-2 text-xs font-bold text-white bg-orange-500 hover:bg-orange-600 rounded-lg">Instalar aplicativo</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="install-help-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center p-4 z-[170]">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+      <div class="bg-blue-950 text-white px-5 py-4 flex items-center justify-between">
+        <h3 class="font-bold">Como instalar</h3>
+        <button id="install-help-close" type="button" class="bg-white/10 hover:bg-white/20 p-1.5 rounded-full" aria-label="Fechar">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div id="install-help-content" class="p-5 text-sm text-slate-700 space-y-3"></div>
+    </div>
+  </div>
+
+  <div id="offline-banner" class="hidden fixed top-0 left-0 right-0 z-[200] bg-amber-500 text-amber-950 text-center text-xs font-bold py-1.5 px-3">
+    Sem internet. O aplicativo continuará usando o conteúdo já armazenado neste dispositivo.
+  </div>
+
+
+</body>
+</html>

@@ -1,0 +1,17 @@
+import { copyFile, access, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import path from "node:path";
+
+const distDir = path.resolve("dist");
+const indexPath = path.join(distDir, "index.html");
+const fallbackPath = path.join(distDir, "404.html");
+
+await access(indexPath, constants.R_OK);
+await copyFile(indexPath, fallbackPath);
+await writeFile(
+  path.join(distDir, "DEPLOY_NETLIFY_OK.txt"),
+  "Pacote compilado do Diario de Moldes WMoldes 2.2. Envie o CONTEUDO desta pasta ao Netlify.\n",
+  "utf8",
+);
+
+console.log("Fallback 404.html e marcador de deploy criados.");

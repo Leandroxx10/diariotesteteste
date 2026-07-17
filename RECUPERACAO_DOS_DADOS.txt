@@ -1,0 +1,29 @@
+-- molds: keep public read, restrict writes to authenticated users
+DROP POLICY IF EXISTS "Public insert molds" ON public.molds;
+DROP POLICY IF EXISTS "Public update molds" ON public.molds;
+DROP POLICY IF EXISTS "Public delete molds" ON public.molds;
+
+CREATE POLICY "Authenticated insert molds" ON public.molds
+  FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Authenticated update molds" ON public.molds
+  FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Authenticated delete molds" ON public.molds
+  FOR DELETE TO authenticated USING (true);
+
+-- occurrences: same treatment
+DROP POLICY IF EXISTS "Public insert occurrences" ON public.occurrences;
+DROP POLICY IF EXISTS "Public update occurrences" ON public.occurrences;
+DROP POLICY IF EXISTS "Public delete occurrences" ON public.occurrences;
+
+CREATE POLICY "Authenticated insert occurrences" ON public.occurrences
+  FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "Authenticated update occurrences" ON public.occurrences
+  FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Authenticated delete occurrences" ON public.occurrences
+  FOR DELETE TO authenticated USING (true);
+
+-- Revoke direct table writes from anon (policies already scoped, but explicit is safer)
+REVOKE INSERT, UPDATE, DELETE ON public.molds FROM anon;
+REVOKE INSERT, UPDATE, DELETE ON public.occurrences FROM anon;
+GRANT INSERT, UPDATE, DELETE ON public.molds TO authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.occurrences TO authenticated;

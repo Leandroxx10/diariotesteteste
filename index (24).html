@@ -1,0 +1,122 @@
+let deferredInstallPrompt = null;
+
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+function isIos() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent);
+}
+
+function showElement(element, displayClass = 'flex') {
+  if (!element) return;
+  element.classList.remove('hidden');
+  element.classList.add(displayClass);
+}
+
+function hideElement(element, displayClass = 'flex') {
+  if (!element) return;
+  element.classList.add('hidden');
+  element.classList.remove(displayClass);
+}
+
+export function initializePwa(showToast = () => {}) {
+  const installButton = document.getElementById('btn-install');
+  const banner = document.getElementById('install-banner');
+  const confirmButton = document.getElementById('install-confirm');
+  const dismissButton = document.getElementById('install-dismiss');
+  const helpModal = document.getElementById('install-help-modal');
+  const helpContent = document.getElementById('install-help-content');
+  const helpClose = document.getElementById('install-help-close');
+  const offlineBanner = document.getElementById('offline-banner');
+
+  const updateConnectionUi = () => {
+    if (navigator.onLine) hideElement(offlineBanner);
+    else showElement(offlineBanner, 'block');
+  };
+  window.addEventListener('online', updateConnectionUi);
+  window.addEventListener('offline', updateConnectionUi);
+  updateConnectionUi();
+
+  if ('serviceWorker' in navigator) {
+    const registerServiceWorker = async () => {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        registration.update().catch(() => {});
+      } catch (error) {
+        console.warn('Service worker não registrado:', error);
+      }
+    };
+    if (document.readyState === 'complete') registerServiceWorker();
+    else window.addEventListener('load', registerServiceWorker, { once: true });
+  }
+
+  const showHelp = () => {
+    if (!helpContent || !helpModal) return;
+    if (isIos()) {
+      helpContent.innerHTML = `
+        <p><strong>iPhone/iPad:</strong> abra este link no Safari.</p>
+        <p>Toque no botão <strong>Compartilhar</strong> e depois em <strong>Adicionar à Tela de Início</strong>.</p>
+        <p>Confirme em <strong>Adicionar</strong>. O ícone será criado e o sistema abrirá em janela própria.</p>`;
+    } else {
+      helpContent.innerHTML = `
+        <p>Abra o menu do navegador e procure por <strong>Instalar aplicativo</strong>, <strong>Aplicativos</strong> ou <strong>Adicionar à tela inicial</strong>.</p>
+        <p>No Windows, prefira Microsoft Edge ou Google Chrome atualizado. Depois de instalado, abra o aplicativo e use o menu do ícone para fixá-lo na barra de tarefas.</p>`;
+    }
+    showElement(helpModal);
+  };
+
+  const requestInstall = async () => {
+    if (isStandalone()) {
+      showToast('O aplicativo já está instalado neste dispositivo.');
+      return;
+    }
+    if (!deferredInstallPrompt) {
+      showHelp();
+      return;
+    }
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    hideElement(banner, 'block');
+    installButton?.classList.add('hidden');
+    installButton?.classList.remove('flex');
+    if (choice.outcome === 'accepted') showToast('Instalação autorizada.');
+  };
+
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    if (!isStandalone()) {
+      installButton?.classList.remove('hidden');
+      installButton?.classList.add('flex');
+      if (sessionStorage.getItem('wmoldes_install_dismissed') !== '1') {
+        window.setTimeout(() => showElement(banner, 'block'), 1400);
+      }
+    }
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    hideElement(banner, 'block');
+    installButton?.classList.add('hidden');
+    installButton?.classList.remove('flex');
+    showToast('Diário de Moldes instalado.');
+  });
+
+  if (isIos() && !isStandalone()) {
+    installButton?.classList.remove('hidden');
+    installButton?.classList.add('flex');
+  }
+
+  installButton?.addEventListener('click', requestInstall);
+  confirmButton?.addEventListener('click', requestInstall);
+  dismissButton?.addEventListener('click', () => {
+    sessionStorage.setItem('wmoldes_install_dismissed', '1');
+    hideElement(banner, 'block');
+  });
+  helpClose?.addEventListener('click', () => hideElement(helpModal));
+  helpModal?.addEventListener('click', (event) => {
+    if (event.target === helpModal) hideElement(helpModal);
+  });
+}

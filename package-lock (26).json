@@ -1,0 +1,33 @@
+
+CREATE TABLE public.molds (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE public.occurrences (
+  id TEXT PRIMARY KEY,
+  mold_id TEXT NOT NULL,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX occurrences_mold_id_idx ON public.occurrences(mold_id);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.molds TO anon, authenticated;
+GRANT ALL ON public.molds TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.occurrences TO anon, authenticated;
+GRANT ALL ON public.occurrences TO service_role;
+
+ALTER TABLE public.molds ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.occurrences ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public read molds" ON public.molds FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Public insert molds" ON public.molds FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY "Public update molds" ON public.molds FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public delete molds" ON public.molds FOR DELETE TO anon, authenticated USING (true);
+
+CREATE POLICY "Public read occurrences" ON public.occurrences FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY "Public insert occurrences" ON public.occurrences FOR INSERT TO anon, authenticated WITH CHECK (true);
+CREATE POLICY "Public update occurrences" ON public.occurrences FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
+CREATE POLICY "Public delete occurrences" ON public.occurrences FOR DELETE TO anon, authenticated USING (true);

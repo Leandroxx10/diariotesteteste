@@ -1,0 +1,15 @@
+import { cp, mkdir, rm, access } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const desktopRoot = resolve(here, '..');
+const projectRoot = resolve(desktopRoot, '..');
+const source = resolve(projectRoot, 'dist');
+const target = resolve(desktopRoot, 'app');
+
+await access(resolve(source, 'index.html'));
+await rm(target, { recursive: true, force: true });
+await mkdir(target, { recursive: true });
+await cp(source, target, { recursive: true });
+console.log('Build web copiado para desktop/app.');

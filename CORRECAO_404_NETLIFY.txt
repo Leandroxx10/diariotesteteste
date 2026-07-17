@@ -1,0 +1,2221 @@
+
+    import { createClient } from "@supabase/supabase-js";
+import { initializePwa } from "./pwa.js";
+
+// ================= CONFIGURAÇÃO E AUTENTICAÇÃO =================
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "").trim();
+const SUPABASE_ANON_KEY = (
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  ""
+).trim();
+const sb = SUPABASE_URL && SUPABASE_ANON_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    })
+  : null;
+
+let currentSession = null;
+let authReady = false;
+
+function setSyncStatus(message, state = "neutral") {
+  const el = document.getElementById("sync-status");
+  if (!el) return;
+  el.textContent = message;
+  el.className = "text-[10px] truncate " + (
+    state === "ok" ? "text-emerald-200" :
+    state === "error" ? "text-amber-200" :
+    "text-blue-200/80"
+  );
+}
+
+function isAuthed() {
+  return !!(currentSession && currentSession.user);
+}
+
+function openLoginModal() {
+  const modal = document.getElementById("modal-login");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+  const error = document.getElementById("login-error");
+  if (error) error.classList.add("hidden");
+  setTimeout(() => document.getElementById("login-user")?.focus(), 50);
+}
+
+function closeLoginModal() {
+  const modal = document.getElementById("modal-login");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+  modal.querySelector("form")?.reset();
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  if (!sb) {
+    showToast("Configure o Supabase antes de entrar.");
+    return;
+  }
+  const email = (document.getElementById("login-user")?.value || "").trim();
+  const password = document.getElementById("login-pass")?.value || "";
+  const submit = event.submitter;
+  if (submit) submit.disabled = true;
+  try {
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    currentSession = data.session;
+    closeLoginModal();
+    updateAuthUI();
+    showToast("Acesso autorizado. Sincronizando dados...");
+    const synced = await cloudLoadAll();
+    if (synced) {
+      renderMoldsGrid();
+      if (selectedMoldId) await hydrateMoldAndOccurrences(selectedMoldId);
+    }
+  } catch (error) {
+    console.warn("Falha no login:", error);
+    document.getElementById("login-error")?.classList.remove("hidden");
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+
+async function toggleAuth() {
+  if (isAuthed()) {
+    await sb?.auth.signOut();
+    currentSession = null;
+    updateAuthUI();
+    showToast("Sessão encerrada.");
+    return;
+  }
+  openLoginModal();
+}
+
+function requireAuth() {
+  if (isAuthed()) return true;
+  openLoginModal();
+  return false;
+}
+
+function updateAuthUI() {
+  const authed = isAuthed();
+  const label = document.getElementById("btn-auth-label");
+  if (label) label.textContent = authed ? "Sair" : "Entrar";
+  [document.getElementById("btn-add-mold"), document.getElementById("btn-import")].forEach((button) => {
+    if (button) button.style.display = authed ? "" : "none";
+  });
+  try { renderMoldsGrid(); } catch {}
+  if (typeof selectedMoldId !== "undefined" && selectedMoldId) {
+    try { renderDetailScreen(); } catch {}
+  }
+}
+
+async function initializeAuth() {
+  if (!sb) {
+    authReady = true;
+    currentSession = null;
+    updateAuthUI();
+    setSyncStatus("Modo local: Supabase não configurado", "error");
+    return;
+  }
+  const { data } = await sb.auth.getSession();
+  currentSession = data.session || null;
+  authReady = true;
+  updateAuthUI();
+  sb.auth.onAuthStateChange((_event, session) => {
+    currentSession = session || null;
+    updateAuthUI();
+  });
+}
+
+// ================= DADOS E MODELO DE ESTADO =================
+
+    const STORAGE_KEY = 'wmoldes_diario_v1';
+    const LITE_PDF_MARKER = '__lite__';
+
+
+    const ALLOWED_TAG_CLASSES = new Set([
+      'bg-sky-100 text-sky-800',
+      'bg-orange-100 text-orange-800',
+      'bg-orange-600 text-white font-semibold',
+      'bg-gray-500 text-white',
+      'bg-slate-700 text-white',
+      'bg-red-500 text-white',
+      'bg-blue-100 text-blue-800',
+      'bg-emerald-100 text-emerald-800',
+      'bg-yellow-100 text-yellow-800',
+      'bg-purple-100 text-purple-800',
+      'bg-pink-100 text-pink-800',
+    ]);
+
+    function cleanText(value, maxLength = 5000) {
+      return String(value ?? '')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/[<>`]/g, '')
+        .trim()
+        .slice(0, maxLength);
+    }
+
+    function safeExistingId(value) {
+      return String(value ?? '').trim().replace(/[^a-zA-Z0-9._:-]/g, '-').slice(0, 120);
+    }
+
+    function safeRecordId(value, prefix = 'item') {
+      return safeExistingId(value) || `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function safeAssetSource(value, allowedKinds = ['image', 'pdf']) {
+      const source = String(value ?? '').trim();
+      if (!source || /[\"'<>`\\]/.test(source)) return '';
+      if (/^https:\/\//i.test(source) || /^blob:/i.test(source)) return source;
+      if (allowedKinds.includes('image') && /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(source)) return source;
+      if (allowedKinds.includes('pdf') && /^data:application\/pdf;base64,/i.test(source)) return source;
+      return '';
+    }
+
+    function normalizeTag(tag) {
+      const text = cleanText(tag?.text, 100);
+      if (!text) return null;
+      const color = ALLOWED_TAG_CLASSES.has(tag?.color) ? tag.color : 'bg-slate-700 text-white';
+      const rawPdfData = tag?.pdf?.data;
+      const pdfData = rawPdfData === LITE_PDF_MARKER ? LITE_PDF_MARKER : safeAssetSource(rawPdfData, ['pdf']);
+      const pdf = pdfData ? { data: pdfData, name: cleanText(tag?.pdf?.name, 180) || 'documento.pdf' } : undefined;
+      return { text, color, ...(pdf ? { pdf } : {}) };
+    }
+
+    function normalizeAttachment(attachment, allowedKinds = ['image', 'pdf']) {
+      if (!attachment || typeof attachment !== 'object') return null;
+      const rawData = attachment.data;
+      const data = rawData === LITE_PDF_MARKER ? LITE_PDF_MARKER : safeAssetSource(rawData, allowedKinds);
+      if (!data) return null;
+      return {
+        data,
+        name: cleanText(attachment.name, 180),
+        type: cleanText(attachment.type, 80),
+        updatedAt: cleanText(attachment.updatedAt, 80),
+      };
+    }
+
+    function normalizeMold(raw) {
+      const id = safeRecordId(raw?.id, 'molde');
+      const images = (Array.isArray(raw?.images) ? raw.images : [])
+        .map((item) => safeAssetSource(item, ['image']))
+        .filter(Boolean)
+        .slice(0, 3);
+      const legacyImage = safeAssetSource(raw?.image, ['image']);
+      if (images.length === 0 && legacyImage) images.push(legacyImage);
+      const tags = (Array.isArray(raw?.tags) ? raw.tags : []).map(normalizeTag).filter(Boolean).slice(0, 80);
+      const thumbnail = safeAssetSource(raw?.thumbnail, ['image']);
+      const datasheet = normalizeAttachment(raw?.datasheet, ['image', 'pdf']);
+      const charts = raw?.charts && typeof raw.charts === 'object'
+        ? Object.fromEntries(Object.entries(raw.charts).map(([key, value]) => [cleanText(key, 40), normalizeAttachment(value, ['image'])]).filter(([, value]) => value))
+        : {};
+      return {
+        ...raw,
+        id,
+        name: cleanText(raw?.name, 100).toUpperCase() || 'SEM NOME',
+        images,
+        image: images[0] || legacyImage || '',
+        thumbnail,
+        imageName: cleanText(raw?.imageName, 180),
+        tags,
+        datasheet,
+        charts,
+        occurrenceCount: Number.isFinite(Number(raw?.occurrenceCount)) ? Math.max(0, Number(raw.occurrenceCount)) : undefined,
+        updatedAt: cleanText(raw?.updatedAt || raw?.createdAt, 80),
+        createdAt: cleanText(raw?.createdAt, 80),
+      };
+    }
+
+    function normalizeOccurrence(raw) {
+      const images = (Array.isArray(raw?.images) ? raw.images : [])
+        .map((item) => safeAssetSource(item, ['image']))
+        .filter(Boolean)
+        .slice(0, 12);
+      const legacyImage = safeAssetSource(raw?.image, ['image']);
+      if (images.length === 0 && legacyImage) images.push(legacyImage);
+      return {
+        ...raw,
+        id: safeRecordId(raw?.id, 'occ'),
+        moldId: safeExistingId(raw?.moldId),
+        machine: cleanText(raw?.machine, 120),
+        date: /^\d{4}-\d{2}-\d{2}$/.test(raw?.date || '') ? raw.date : '',
+        description: cleanText(raw?.description, 12000),
+        defectType: cleanText(raw?.defectType, 120) || 'Geral',
+        images,
+        image: images[0] || legacyImage || '',
+        updatedAt: cleanText(raw?.updatedAt || raw?.createdAt, 80),
+        createdAt: cleanText(raw?.createdAt, 80),
+      };
+    }
+
+    // ================= NUVEM (Supabase) =================
+    async function cloudLoadAll() {
+      if (!sb) return false;
+      setSyncStatus('Sincronizando com a nuvem...');
+      try {
+        if (isAuthed()) await syncPendingLocalChanges();
+
+        // A tela inicial baixa somente os moldes, miniaturas e a contagem de ocorrências.
+        // O histórico de cada molde é buscado apenas quando o usuário abre o equipamento.
+        const needsRecovery = isAuthed() && (
+          molds.some((m) => m && (m._pendingCloudSave || !m._lite)) ||
+          occurrences.some((o) => o && (o._pendingCloudSave || !o._lite))
+        );
+        let moldsRes;
+        let moldMetaRes = { data: [], error: null };
+        let occMetaRes = { data: [], error: null };
+        if (needsRecovery) {
+          [moldsRes, moldMetaRes, occMetaRes] = await Promise.all([
+            sb.rpc('molds_lite'),
+            sb.from('molds').select('id,updated_at'),
+            sb.from('occurrences').select('id,updated_at'),
+          ]);
+        } else {
+          moldsRes = await sb.rpc('molds_lite');
+        }
+        if (moldsRes.error) throw moldsRes.error;
+        if (moldMetaRes.error) throw moldMetaRes.error;
+        if (occMetaRes.error) throw occMetaRes.error;
+
+        const recoveredLocal = needsRecovery && await recoverUnsyncedLocalChanges(
+          moldMetaRes.data || [],
+          occMetaRes.data || []
+        );
+        if (recoveredLocal) {
+          moldsRes = await sb.rpc('molds_lite');
+          if (moldsRes.error) throw moldsRes.error;
+        }
+
+        const cloudMolds = (moldsRes.data || []).map(r => normalizeMold({
+          id: r.id,
+          name: r.name || 'Sem nome',
+          imageName: r.image_name || '',
+          tags: Array.isArray(r.tags) ? r.tags : [],
+          thumbnail: r.thumbnail || '',
+          occurrenceCount: r.occurrence_count,
+          image: '',
+          images: [],
+          updatedAt: r.updated_at_iso || r.created_at || '',
+          _lite: true,
+        }));
+
+        if (cloudMolds.length === 0) {
+          // Nuvem vazia: envia dados locais somente quando há uma sessão autorizada.
+          if (isAuthed() && (molds.length > 0 || occurrences.length > 0)) {
+            for (const m of molds) await cloudUpsertMold(m);
+            for (const o of occurrences) await cloudUpsertOccurrence(o);
+          } else if (molds.length === 0) {
+            molds = [];
+          }
+        } else {
+          molds = cloudMolds;
+          const validMoldIds = new Set(cloudMolds.map((m) => m.id));
+          occurrences = occurrences.filter((o) => o && (o._pendingCloudSave || validMoldIds.has(o.moldId)));
+          try { saveState(); } catch {}
+        }
+        setSyncStatus('Dados sincronizados', 'ok');
+        return true;
+      } catch (e) {
+        console.warn('Cloud load falhou, a usar cache local:', e);
+        setSyncStatus('Usando cache local; sincronização indisponível', 'error');
+        return false;
+      }
+    }
+
+    function stripSyncMeta(record) {
+      const { id, _lite, _pendingCloudSave, ...rest } = record || {};
+      return rest;
+    }
+
+    function parseTime(value) {
+      const ts = value ? Date.parse(value) : 0;
+      return Number.isFinite(ts) ? ts : 0;
+    }
+
+    function getLocalUpdatedAt(item) {
+      return parseTime(item && (item.updatedAt || item.createdAt));
+    }
+
+    function mergeTagsPreservingLitePdf(existingTags, incomingTags) {
+      if (!Array.isArray(incomingTags)) return incomingTags;
+      const existingByText = new Map((existingTags || []).map(t => [normTagKey(t && t.text), t]));
+      return incomingTags.map(tag => {
+        const existing = existingByText.get(normTagKey(tag && tag.text));
+        if (tag && tag.pdf && tag.pdf.data === LITE_PDF_MARKER && existing && existing.pdf && existing.pdf.data) {
+          return { ...tag, pdf: existing.pdf };
+        }
+        return tag;
+      });
+    }
+
+    function mergeMoldDataForCloud(existing, incoming, sourceWasLite) {
+      if (!sourceWasLite) return incoming;
+      const merged = { ...(existing || {}), ...(incoming || {}) };
+      if ((!Array.isArray(incoming.images) || incoming.images.length === 0) && Array.isArray(existing && existing.images)) {
+        merged.images = existing.images;
+      }
+      if (!incoming.image && existing && existing.image) merged.image = existing.image;
+      if (!incoming.thumbnail && existing && existing.thumbnail) merged.thumbnail = existing.thumbnail;
+      if (!incoming.datasheet && existing && existing.datasheet) merged.datasheet = existing.datasheet;
+      if (!incoming.charts && existing && existing.charts) merged.charts = existing.charts;
+      merged.tags = mergeTagsPreservingLitePdf(existing && existing.tags, incoming && incoming.tags);
+      return merged;
+    }
+
+    function mergeOccurrenceDataForCloud(existing, incoming, sourceWasLite) {
+      if (!sourceWasLite) return incoming;
+      const merged = { ...(existing || {}), ...(incoming || {}) };
+      if ((!Array.isArray(incoming.images) || incoming.images.length === 0) && Array.isArray(existing && existing.images)) {
+        merged.images = existing.images;
+      }
+      if (!incoming.image && existing && existing.image) merged.image = existing.image;
+      return merged;
+    }
+
+    async function fetchCloudMoldData(id) {
+      const { data, error } = await sb.from('molds').select('data').eq('id', id).maybeSingle();
+      if (error || !data) return null;
+      return data.data || null;
+    }
+
+    async function fetchCloudOccurrenceData(id) {
+      const { data, error } = await sb.from('occurrences').select('data').eq('id', id).maybeSingle();
+      if (error || !data) return null;
+      return data.data || null;
+    }
+
+    async function syncPendingLocalChanges() {
+      const pendingMolds = molds.filter(m => m && m._pendingCloudSave);
+      const pendingOccs = occurrences.filter(o => o && o._pendingCloudSave);
+      if (pendingMolds.length === 0 && pendingOccs.length === 0) return false;
+      for (const m of pendingMolds) await cloudUpsertMold(m);
+      for (const o of pendingOccs) await cloudUpsertOccurrence(o);
+      return true;
+    }
+
+    async function recoverUnsyncedLocalChanges(cloudMoldMeta, cloudOccMeta) {
+      if (!isAuthed()) return false;
+      const cloudMolds = new Map((cloudMoldMeta || []).map(r => [r.id, parseTime(r.updated_at)]));
+      const cloudOccs = new Map((cloudOccMeta || []).map(r => [r.id, parseTime(r.updated_at)]));
+      const localMoldsToSave = molds.filter(m =>
+        m && !m._lite && (
+          m._pendingCloudSave ||
+          !cloudMolds.has(m.id) ||
+          (getLocalUpdatedAt(m) > (cloudMolds.get(m.id) || 0) + 1000)
+        )
+      );
+      const localOccsToSave = occurrences.filter(o =>
+        o && !o._lite && (
+          o._pendingCloudSave ||
+          !cloudOccs.has(o.id) ||
+          (getLocalUpdatedAt(o) > (cloudOccs.get(o.id) || 0) + 1000)
+        )
+      );
+      if (localMoldsToSave.length === 0 && localOccsToSave.length === 0) return false;
+      for (const m of localMoldsToSave) await cloudUpsertMold(m);
+      for (const o of localOccsToSave) await cloudUpsertOccurrence(o);
+      return true;
+    }
+
+    // Hidratação sob demanda dos dados completos (imagens, PDFs, gráficos, etc.)
+    async function hydrateMoldFull(id) {
+      if (!sb || !id) return null;
+      const idx = molds.findIndex(m => m.id === id);
+      if (idx < 0) return null;
+      if (!molds[idx]._lite) return molds[idx];
+      try {
+        const { data, error } = await sb.from('molds').select('data').eq('id', id).maybeSingle();
+        if (error || !data) return molds[idx];
+        const liteThumbnail = molds[idx].thumbnail || '';
+        molds[idx] = normalizeMold({ ...(data.data || {}), id, _lite: false });
+        molds[idx]._lite = false;
+        if (!molds[idx].thumbnail && liteThumbnail) molds[idx].thumbnail = liteThumbnail;
+        try {
+          const generated = await ensureMoldThumbnail(molds[idx]);
+          if (generated && isAuthed()) cloudUpsertMold(molds[idx]);
+        } catch {}
+        try { saveState(); } catch {}
+        return molds[idx];
+      } catch (e) { return molds[idx]; }
+    }
+
+    async function hydrateOccurrenceFull(id) {
+      if (!sb || !id) return null;
+      const idx = occurrences.findIndex(o => o.id === id);
+      if (idx < 0) return null;
+      if (!occurrences[idx]._lite) return occurrences[idx];
+      try {
+        const { data, error } = await sb.from('occurrences').select('data,mold_id').eq('id', id).maybeSingle();
+        if (error || !data) return occurrences[idx];
+        occurrences[idx] = normalizeOccurrence({ ...(data.data || {}), id, moldId: data.mold_id, _lite: false });
+        occurrences[idx]._lite = false;
+        try { saveState(); } catch {}
+        return occurrences[idx];
+      } catch (e) { return occurrences[idx]; }
+    }
+
+    async function loadOccurrencesLiteForMold(moldId) {
+      if (!sb || !moldId) return occurrences.filter((o) => o.moldId === moldId);
+      try {
+        const { data, error } = await sb
+          .from('occurrences')
+          .select('id,mold_id,machine,occ_date,description,defect_type,updated_at_iso,created_at')
+          .eq('mold_id', moldId)
+          .order('updated_at', { ascending: false });
+        if (error) throw error;
+
+        const pending = occurrences.filter((o) => o.moldId === moldId && o._pendingCloudSave);
+        const pendingIds = new Set(pending.map((o) => o.id));
+        const cloudItems = (data || [])
+          .filter((row) => !pendingIds.has(row.id))
+          .map((row) => normalizeOccurrence({
+            id: row.id,
+            moldId: row.mold_id,
+            machine: row.machine || '',
+            date: row.occ_date || '',
+            description: row.description || '',
+            defectType: row.defect_type || '',
+            updatedAt: row.updated_at_iso || row.created_at || '',
+            images: [],
+            image: '',
+            _lite: true,
+          }));
+
+        occurrences = [
+          ...occurrences.filter((o) => o.moldId !== moldId),
+          ...pending,
+          ...cloudItems,
+        ];
+        const mold = molds.find((item) => item.id === moldId);
+        if (mold) mold.occurrenceCount = pending.length + cloudItems.length;
+        try { saveState(); } catch {}
+        return [...pending, ...cloudItems];
+      } catch (error) {
+        console.warn('Falha ao carregar ocorrências do molde:', error);
+        return occurrences.filter((o) => o.moldId === moldId);
+      }
+    }
+
+    // Hidrata os moldes visíveis na página atual (em pequenos lotes paralelos)
+    async function hydrateVisibleMolds() {
+      const q = (typeof searchQuery === 'string' ? searchQuery : '').toLowerCase();
+      const filtered = molds.filter(m =>
+        (m.name || '').toLowerCase().includes(q) ||
+        (m.tags || []).some(t => (t.text || '').toLowerCase().includes(q))
+      );
+      const start = (currentPage - 1) * PAGE_SIZE;
+      const pageItems = filtered.slice(start, start + PAGE_SIZE).filter(m => m._lite);
+      const BATCH = 4;
+      for (let i = 0; i < pageItems.length; i += BATCH) {
+        const batch = pageItems.slice(i, i + BATCH);
+        await Promise.all(batch.map(m => hydrateMoldFull(m.id)));
+        try { renderMoldsGrid(); } catch {}
+      }
+    }
+
+    // Carrega o molde e apenas o histórico pertencente a ele.
+    async function hydrateMoldAndOccurrences(moldId) {
+      await Promise.all([
+        hydrateMoldFull(moldId),
+        loadOccurrencesLiteForMold(moldId),
+      ]);
+      try {
+        if (selectedMoldId === moldId) {
+          renderDetailScreen();
+          scheduleOccurrenceHydration();
+        }
+      } catch {}
+    }
+
+    async function cloudUpsertMold(mold) {
+      if (!sb || !mold) return;
+      try {
+        mold._pendingCloudSave = true;
+        try { saveState(); } catch {}
+        const id = mold.id;
+        const wasLite = !!mold._lite;
+        let rest = stripSyncMeta(mold);
+        if (wasLite) {
+          const existing = await fetchCloudMoldData(id);
+          rest = mergeMoldDataForCloud(existing, rest, true);
+        }
+        const stamp = rest.updatedAt || new Date().toISOString();
+        rest.updatedAt = stamp;
+        const { error } = await sb.from('molds').upsert({ id, data: rest, updated_at: stamp });
+        if (error) throw error;
+        const current = molds.find(m => m.id === id);
+        if (current) {
+          current.updatedAt = stamp;
+          delete current._pendingCloudSave;
+          try { saveState(); } catch {}
+        }
+      } catch (e) { console.warn('cloudUpsertMold', e); }
+    }
+
+    async function cloudUpsertOccurrence(occ) {
+      if (!sb || !occ) return;
+      try {
+        occ._pendingCloudSave = true;
+        try { saveState(); } catch {}
+        const id = occ.id;
+        const moldId = occ.moldId;
+        const wasLite = !!occ._lite;
+        let rest = stripSyncMeta(occ);
+        delete rest.moldId;
+        if (wasLite) {
+          const existing = await fetchCloudOccurrenceData(id);
+          rest = mergeOccurrenceDataForCloud(existing, rest, true);
+        }
+        const stamp = rest.updatedAt || new Date().toISOString();
+        rest.updatedAt = stamp;
+        const { error } = await sb.from('occurrences').upsert({ id, mold_id: moldId, data: rest, updated_at: stamp });
+        if (error) throw error;
+        const current = occurrences.find(o => o.id === id);
+        if (current) {
+          current.updatedAt = stamp;
+          delete current._pendingCloudSave;
+          try { saveState(); } catch {}
+        }
+      } catch (e) { console.warn('cloudUpsertOccurrence', e); }
+    }
+
+    async function cloudDeleteMold(id) {
+      if (!sb) return;
+      try {
+        await sb.from('occurrences').delete().eq('mold_id', id);
+        await sb.from('molds').delete().eq('id', id);
+      } catch (e) { console.warn('cloudDeleteMold', e); }
+    }
+
+    async function cloudDeleteOccurrence(id) {
+      if (!sb) return;
+      try {
+        await sb.from('occurrences').delete().eq('id', id);
+      } catch (e) { console.warn('cloudDeleteOccurrence', e); }
+    }
+
+    async function cloudReplaceAll(newMolds, newOccs) {
+      if (!sb) return;
+      try {
+        await sb.from('occurrences').delete().neq('id', '___none___');
+        await sb.from('molds').delete().neq('id', '___none___');
+        for (const m of newMolds) await cloudUpsertMold(m);
+        for (const o of newOccs) await cloudUpsertOccurrence(o);
+      } catch (e) { console.warn('cloudReplaceAll', e); }
+    }
+
+    // O aplicativo inicia vazio. Dados reais vêm do cache local ou do Supabase.
+    let molds = [];
+    let occurrences = [];
+
+    // Persistência local — carrega dados gravados se existirem
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        if (Array.isArray(data.molds)) molds = data.molds.map(normalizeMold);
+        if (Array.isArray(data.occurrences)) occurrences = data.occurrences.map(normalizeOccurrence);
+      } catch (e) {
+        console.warn('Falha ao carregar dados gravados:', e);
+      }
+    }
+
+    function saveState() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          molds: molds.map(toLocalCacheMold),
+          occurrences: occurrences.map(toLocalCacheOccurrence),
+        }));
+      } catch (e) {
+        console.warn('Falha ao gravar dados:', e);
+      }
+    }
+
+    function isDataUrl(value) {
+      return typeof value === 'string' && value.startsWith('data:');
+    }
+
+    function toLiteTags(tags) {
+      return (tags || []).map(tag => ({
+        ...tag,
+        ...(tag && tag.pdf && tag.pdf.data ? { pdf: { name: tag.pdf.name || '', data: LITE_PDF_MARKER } } : {}),
+      }));
+    }
+
+    function toLocalCacheMold(mold) {
+      const cached = { ...(mold || {}) };
+      if (cached._pendingCloudSave) return cached;
+      let becameLite = !!cached._lite;
+      cached.tags = toLiteTags(cached.tags);
+      if ((cached.tags || []).some((tag) => tag?.pdf?.data === LITE_PDF_MARKER)) becameLite = true;
+      const originalImages = cached.images || [];
+      cached.images = originalImages.filter(src => !isDataUrl(src));
+      if (cached.images.length !== originalImages.length) becameLite = true;
+      if (isDataUrl(cached.image)) {
+        cached.image = cached.images[0] || '';
+        becameLite = true;
+      }
+      if (cached.datasheet && cached.datasheet.data) {
+        cached.datasheet = { name: cached.datasheet.name || '', type: cached.datasheet.type || '', data: LITE_PDF_MARKER };
+        becameLite = true;
+      }
+      if (cached.charts && Object.keys(cached.charts).length > 0) {
+        cached.charts = Object.fromEntries(Object.entries(cached.charts).map(([key, chart]) => [
+          key,
+          { name: chart && chart.name || '', updatedAt: chart && chart.updatedAt || '', data: LITE_PDF_MARKER },
+        ]));
+        becameLite = true;
+      }
+      if (becameLite) cached._lite = true;
+      return cached;
+    }
+
+    function toLocalCacheOccurrence(occ) {
+      const cached = { ...(occ || {}) };
+      if (cached._pendingCloudSave) return cached;
+      const originalImages = cached.images || [];
+      cached.images = originalImages.filter(src => !isDataUrl(src));
+      if (cached.images.length !== originalImages.length) cached._lite = true;
+      if (isDataUrl(cached.image)) {
+        cached.image = cached.images[0] || '';
+        cached._lite = true;
+      }
+      return cached;
+    }
+
+    async function fetchAllCloudRows(table, columns, pageSize = 500) {
+      const rows = [];
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await sb.from(table).select(columns).range(from, from + pageSize - 1);
+        if (error) throw error;
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
+      }
+      return rows;
+    }
+
+    // Exporta um backup completo. Quando a nuvem está disponível, busca todos os registros completos.
+    async function exportData() {
+      try {
+        let exportMolds = molds;
+        let exportOccurrences = occurrences;
+        if (sb && navigator.onLine) {
+          setSyncStatus('Preparando backup completo...');
+          const [moldRows, occurrenceRows] = await Promise.all([
+            fetchAllCloudRows('molds', 'id,data'),
+            fetchAllCloudRows('occurrences', 'id,mold_id,data'),
+          ]);
+          exportMolds = moldRows.map((row) => normalizeMold({ ...(row.data || {}), id: row.id, _lite: false }));
+          exportOccurrences = occurrenceRows.map((row) => normalizeOccurrence({ ...(row.data || {}), id: row.id, moldId: row.mold_id, _lite: false }));
+          setSyncStatus('Dados sincronizados', 'ok');
+        } else {
+          showToast('Sem internet: o backup conterá somente os dados disponíveis neste dispositivo.');
+        }
+
+        const payload = {
+          exportedAt: new Date().toISOString(),
+          version: 2,
+          molds: exportMolds.map(stripSyncMeta),
+          occurrences: exportOccurrences.map(stripSyncMeta),
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.href = url;
+        a.download = `diario-moldes-${ts}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('Backup completo gerado.');
+      } catch (e) {
+        console.warn('Falha ao exportar dados:', e);
+        setSyncStatus('Falha ao gerar backup', 'error');
+        alert('Não foi possível exportar os dados. Verifique a internet e tente novamente.');
+      }
+    }
+
+    // Importa um ficheiro JSON previamente exportado e substitui o estado atual
+    function importData(event) {
+      if (!requireAuth()) { event.target.value = ''; return; }
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      if (file.size > 50 * 1024 * 1024) {
+        alert('O ficheiro é maior que 50 MB e não será importado.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (!Array.isArray(data.molds) || !Array.isArray(data.occurrences)) {
+            throw new Error('Ficheiro inválido');
+          }
+          if (!confirm('Importar este ficheiro irá substituir os dados atuais. Continuar?')) return;
+          molds = data.molds.map(normalizeMold);
+          occurrences = data.occurrences.map(normalizeOccurrence);
+          saveState();
+          cloudReplaceAll(molds, occurrences);
+          renderMoldsGrid();
+          showToast('Dados importados com sucesso.');
+        } catch (err) {
+          alert('Ficheiro inválido ou corrompido.');
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    // Toast simples para feedback
+    function showToast(message) {
+      let el = document.getElementById('app-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'app-toast';
+        el.className = 'fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg z-50 opacity-0 transition-opacity duration-300 pointer-events-none';
+        document.body.appendChild(el);
+      }
+      el.textContent = message;
+      requestAnimationFrame(() => { el.style.opacity = '1'; });
+      clearTimeout(el._t);
+      el._t = setTimeout(() => { el.style.opacity = '0'; }, 2500);
+    }
+
+    // Estado ativo da aplicação
+    let selectedMoldId = null;
+    let searchQuery = '';
+    let currentPage = 1;
+    const PAGE_SIZE = 12;
+
+    // Normaliza o nome de uma tag para servir de chave (compartilhamento entre moldes)
+    function normTagKey(text) {
+      return (text || '').toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    }
+
+    // Propaga um PDF (ou remoção) para todas as tags com o mesmo nome em todos os moldes
+    function propagateTagPdfByName(tagText, pdfOrNull) {
+      const key = normTagKey(tagText);
+      if (!key) return;
+      const changed = [];
+      molds.forEach(m => {
+        if (!m.tags) return;
+        let mutated = false;
+        m.tags.forEach(t => {
+          if (normTagKey(t.text) !== key) return;
+          if (pdfOrNull) {
+            t.pdf = { data: pdfOrNull.data, name: pdfOrNull.name };
+          } else if (t.pdf) {
+            delete t.pdf;
+          } else {
+            return;
+          }
+          mutated = true;
+        });
+        if (mutated) {
+          m.updatedAt = new Date().toISOString();
+          changed.push(m);
+        }
+      });
+      if (changed.length) {
+        saveState();
+        changed.forEach(m => cloudUpsertMold(m));
+      }
+    }
+
+    // Procura em todos os moldes um PDF já anexado a uma tag com o mesmo nome
+    function findSharedTagPdf(tagText) {
+      const key = normTagKey(tagText);
+      if (!key) return null;
+      for (const m of molds) {
+        if (!m.tags) continue;
+        for (const t of m.tags) {
+          if (normTagKey(t.text) === key && t.pdf && t.pdf.data) {
+            return { data: t.pdf.data, name: t.pdf.name };
+          }
+        }
+      }
+      return null;
+    }
+    
+    // Estado de formulários temporários
+    let newMoldImages = []; // [{ data, name }]  até 3
+    let draftMoldTags = [];
+    let editingMoldId = null;
+
+    let occImages = [];
+    let editingOccurrenceId = null;
+    let isCustomDefectMode = false;
+
+    // ================= FUNÇÕES DE INICIALIZAÇÃO E SUPORTE =================
+
+    window.onload = function() {
+      // Definir a data por defeito para hoje no formulário de ocorrência
+      document.getElementById('occ-date').value = new Date().toISOString().split('T')[0];
+      renderMoldsGrid();
+    };
+
+    // Fallback caso a imagem WMOLDES.png não exista no servidor local
+    function fallbackLogo() {
+      const container = document.getElementById('logo-container');
+      container.innerHTML = `
+        <div class="flex flex-col items-center justify-center w-full h-full select-none">
+          <div class="flex items-center gap-0.5 -mb-1">
+            <svg class="w-8 h-8 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m17 2 4 4-4 4" stroke="#f97316" />
+              <path d="M3 22c3-4 5-8 18-16" stroke="#4f46e5" />
+              <path d="m12 2 4 4-4 4" stroke="#4f46e5" />
+              <path d="M3 17c3-3 5-6 13-11" stroke="#f97316" opacity="0.8" />
+            </svg>
+          </div>
+          <span class="text-blue-900 font-extrabold text-[15px] tracking-tight">WMoldes</span>
+        </div>
+      `;
+    }
+
+    // Formatação de data (AAAA-MM-DD para DD/MM/AAAA)
+    function formatDateToPT(dateStr) {
+      if (!dateStr) return '';
+      const parts = dateStr.split('-');
+      if (parts.length === 3) {
+        return `${parts[2]}/${parts[1]}/${parts[0]}`;
+      }
+      return dateStr;
+    }
+
+    // Formata descrição de ocorrência: destaca *palavra* em negrito e preserva espaçamentos
+    function formatDescription(text) {
+      if (!text) return '';
+      let html = String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+      html = html.replace(/\*([^*]+)\*/g, '<strong>$1</strong>');
+      return html;
+    }
+
+
+    // Contagem de ocorrências por molde
+    function countOccurrences(moldId) {
+      const mold = molds.find((item) => item.id === moldId);
+      if (mold && Number.isFinite(Number(mold.occurrenceCount))) return Number(mold.occurrenceCount);
+      return occurrences.filter(o => o.moldId === moldId).length;
+    }
+
+    // ================= RENDERIZADORES DE ECRÃ (DOM) =================
+
+    // Renderiza a grelha de moldes principal
+    function renderMoldsGrid() {
+      const grid = document.getElementById('mold-grid');
+      grid.innerHTML = '';
+
+      const query = searchQuery.toLowerCase();
+      const filtered = molds.filter((mold) =>
+        (mold.name || '').toLowerCase().includes(query) ||
+        (mold.tags || []).some((tag) => (tag.text || '').toLowerCase().includes(query))
+      );
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `
+          <div class="col-span-full bg-white rounded-2xl p-12 text-center shadow-sm border border-slate-100 max-w-md mx-auto mt-8">
+            <svg class="w-12 h-12 text-orange-500 mx-auto mb-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+            <h3 class="text-lg font-bold text-slate-800 mb-1">Nenhum molde encontrado</h3>
+            <p class="text-slate-500 text-sm mb-6">Tente alterar os termos de busca ou adicione um novo molde no painel superior.</p>
+            <button
+              onclick="openNewMoldModal()"
+              class="bg-blue-900 hover:bg-blue-950 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
+            >
+              Cadastrar Novo Molde
+            </button>
+          </div>
+        `;
+        renderPagination(0, 0);
+        return;
+      }
+
+      const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+      if (currentPage > totalPages) currentPage = totalPages;
+      if (currentPage < 1) currentPage = 1;
+      const start = (currentPage - 1) * PAGE_SIZE;
+      const pageItems = filtered.slice(start, start + PAGE_SIZE);
+
+      pageItems.forEach(mold => {
+        const occCount = countOccurrences(mold.id);
+        const imgs = getMoldImages(mold);
+        const primaryImg = mold.thumbnail || imgs[0] || mold.image || '';
+        const tagsHTML = mold.tags.map((tag, idx) => {
+          const hasPdf = !!(tag.pdf && tag.pdf.data);
+          const pdfIcon = hasPdf
+            ? '<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>'
+            : '';
+          return `
+            <button type="button" onclick="event.stopPropagation(); openTagPdf('${mold.id}', ${idx})" title="${hasPdf ? 'Ver PDF anexado' : 'Sem PDF anexado'}" class="text-[11px] px-2.5 py-1 rounded-full font-medium ${tag.color} ${hasPdf ? 'ring-1 ring-orange-400/60 hover:brightness-110' : 'opacity-90 hover:opacity-100'} transition flex items-center gap-1">
+              ${pdfIcon}
+              <span>${tag.text}</span>
+            </button>
+          `;
+        }).join('');
+
+        const card = document.createElement('div');
+        card.className = "group bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-xl hover:-translate-y-1 border border-slate-200 transition-all duration-300 cursor-pointer flex flex-col relative";
+        card.setAttribute('onclick', `navigateToDetail('${mold.id}')`);
+
+        const imageBlock = primaryImg
+          ? `<img 
+              src="${primaryImg}"
+              alt="${mold.name}"
+              loading="lazy"
+              decoding="async"
+              class="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500"
+            />
+            <div 
+              class="absolute bottom-3 right-3 bg-white/90 backdrop-blur-sm p-1.5 rounded-full shadow-md hover:bg-orange-50 text-slate-600 hover:text-orange-500 transition-colors z-20 cursor-zoom-in"
+              onclick="event.stopPropagation(); openLightbox('${primaryImg}')"
+              title="Visualizar em Tela Cheia"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m3-3H7"/></svg>
+            </div>`
+          : `<div class="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-400">
+              <svg class="w-10 h-10" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              <span class="text-xs font-semibold">Foto disponível ao abrir</span>
+            </div>`;
+
+        card.innerHTML = `
+          <!-- Imagem do Card -->
+          <div class="relative h-48 bg-slate-100 overflow-hidden flex items-center justify-center">
+            ${imageBlock}
+
+            <!-- Botão Editar -->
+            <div
+              class="absolute top-3 right-12 bg-white/95 backdrop-blur-sm p-1.5 rounded-full shadow-md hover:bg-orange-50 text-slate-500 hover:text-orange-600 transition-colors z-20"
+              onclick="event.stopPropagation(); openEditMoldModal('${mold.id}')"
+              title="Editar Molde"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            </div>
+
+            <!-- Botão Eliminar -->
+            <div 
+              class="absolute top-3 right-3 bg-white/95 backdrop-blur-sm p-1.5 rounded-full shadow-md hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors z-20"
+              onclick="event.stopPropagation(); askDeleteMold('${mold.id}')"
+              title="Excluir Molde"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </div>
+            
+          </div>
+
+          <!-- Corpo do Card -->
+          <div class="p-4 flex flex-col flex-1">
+            <div class="flex flex-wrap gap-1.5 mb-4">
+              ${tagsHTML}
+            </div>
+
+            <div class="flex items-center gap-2 mb-3">
+              <div class="h-5 w-5 rounded-full border-2 border-slate-300 flex items-center justify-center text-xs text-slate-400 font-bold">
+                ○
+              </div>
+              <h3 class="text-lg font-bold text-blue-950 tracking-tight">${mold.name}</h3>
+            </div>
+
+            <div class="flex items-center gap-1.5 text-slate-500 text-xs mb-4 bg-slate-50 p-1.5 rounded border border-slate-100">
+              <svg class="w-3.5 h-3.5 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              <span class="truncate">${mold.imageName}</span>
+            </div>
+
+            <div class="border-t border-slate-100 pt-3 mt-auto flex justify-between items-center text-xs text-slate-500">
+              <div class="flex items-center gap-1">
+                <span class="text-lg">📎</span>
+                <span class="font-semibold text-slate-700">${occCount}</span>
+                <span>${occCount === 1 ? 'ocorrência' : 'ocorrências'}</span>
+              </div>
+              <span class="text-orange-500 font-bold group-hover:underline flex items-center gap-0.5">
+                Ver Diário &rarr;
+              </span>
+            </div>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+      renderPagination(filtered.length, totalPages);
+    }
+
+    // Renderiza os controlos de paginação abaixo da grelha
+    function renderPagination(total, totalPages) {
+      let bar = document.getElementById('pagination-bar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'pagination-bar';
+        bar.className = 'flex flex-wrap items-center justify-center gap-2 mt-6 text-sm';
+        const grid = document.getElementById('mold-grid');
+        grid.parentNode.insertBefore(bar, grid.nextSibling);
+      }
+      if (!total || totalPages <= 1) { bar.innerHTML = ''; return; }
+      const start = (currentPage - 1) * PAGE_SIZE + 1;
+      const end = Math.min(currentPage * PAGE_SIZE, total);
+      const btn = (label, page, disabled, active) =>
+        `<button ${disabled ? 'disabled' : ''} onclick="goToPage(${page})"
+          class="px-3 py-1.5 rounded-lg border ${active ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''} font-semibold transition">
+          ${label}
+        </button>`;
+      // Compact page numbers around current
+      const pages = [];
+      const push = (p) => { if (!pages.includes(p) && p >= 1 && p <= totalPages) pages.push(p); };
+      push(1); push(totalPages);
+      for (let p = currentPage - 1; p <= currentPage + 1; p++) push(p);
+      pages.sort((a,b) => a-b);
+      let numbersHtml = '';
+      let prev = 0;
+      pages.forEach(p => {
+        if (p - prev > 1) numbersHtml += `<span class="text-slate-400 px-1">…</span>`;
+        numbersHtml += btn(String(p), p, false, p === currentPage);
+        prev = p;
+      });
+      bar.innerHTML = `
+        <span class="text-xs text-slate-500 mr-2">${start}–${end} de ${total}</span>
+        ${btn('&laquo;', currentPage - 1, currentPage === 1, false)}
+        ${numbersHtml}
+        ${btn('&raquo;', currentPage + 1, currentPage === totalPages, false)}
+      `;
+    }
+
+    function goToPage(p) {
+      currentPage = p;
+      renderMoldsGrid();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    let occurrenceObserver = null;
+    const hydratingOccurrenceIds = new Set();
+
+    function scheduleOccurrenceHydration() {
+      if (!sb) return;
+      occurrenceObserver?.disconnect();
+      const targets = Array.from(document.querySelectorAll('[data-lazy-occ-id]'));
+      if (targets.length === 0) return;
+
+      const hydrateTarget = async (element) => {
+        const id = element.dataset.lazyOccId;
+        if (!id || hydratingOccurrenceIds.has(id)) return;
+        hydratingOccurrenceIds.add(id);
+        try {
+          await hydrateOccurrenceFull(id);
+          if (selectedMoldId) renderDetailScreen();
+        } finally {
+          hydratingOccurrenceIds.delete(id);
+        }
+      };
+
+      if (!('IntersectionObserver' in window)) {
+        targets.slice(0, 2).forEach(hydrateTarget);
+        return;
+      }
+      occurrenceObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          occurrenceObserver?.unobserve(entry.target);
+          hydrateTarget(entry.target);
+        });
+      }, { rootMargin: '240px 0px' });
+      targets.forEach((target) => occurrenceObserver.observe(target));
+    }
+
+    // Renderiza a tela de detalhes de um molde selecionado
+    function renderDetailScreen() {
+      const mold = molds.find(m => m.id === selectedMoldId);
+      if (!mold) return;
+
+      // Actualizar cabeçalhos e campos técnicos
+      document.getElementById('detail-header-name').innerText = mold.name;
+      document.getElementById('detail-mold-name').innerText = mold.name;
+      document.getElementById('detail-mold-id').innerText = `ID Único: ${mold.id}`;
+      document.getElementById('detail-image-name').innerText = mold.imageName || '';
+
+      // Grelha de imagens (até 3)
+      const imgs = getMoldImages(mold);
+      const imagesContainer = document.getElementById('detail-mold-images');
+      if (imgs.length === 0) {
+        imagesContainer.innerHTML = `<div class="col-span-3 h-48 bg-slate-100 rounded-xl border border-dashed border-slate-200 flex items-center justify-center text-xs text-slate-400">Sem imagem</div>`;
+      } else {
+        imagesContainer.innerHTML = imgs.map((src, i) => `
+          <div class="relative group aspect-square bg-slate-100 rounded-xl overflow-hidden shadow-inner border border-slate-200 cursor-zoom-in flex items-center justify-center" onclick="openLightbox('${src}')">
+            <img src="${src}" alt="Imagem do molde ${i+1}" loading="lazy" decoding="async" class="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" />
+            <div class="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition flex items-center justify-center text-white opacity-0 group-hover:opacity-100">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m3-3H7"/></svg>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      // Tags do Molde — botões interactivos (abrem PDF anexado)
+      const tagsContainer = document.getElementById('detail-tags-container');
+      tagsContainer.innerHTML = (mold.tags || []).map((tag, idx) => {
+        const hasPdf = !!(tag.pdf && tag.pdf.data);
+        return `
+          <button type="button" onclick="openTagPdf('${mold.id}', ${idx})" title="${hasPdf ? 'Abrir PDF: ' + (tag.pdf.name || '') : 'Sem PDF anexado'}" class="text-xs px-3 py-1 rounded-full font-semibold ${tag.color} ${hasPdf ? 'ring-2 ring-orange-400/70 hover:brightness-110' : 'hover:opacity-90'} transition flex items-center gap-1.5">
+            ${hasPdf ? '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>' : ''}
+            <span>${tag.text}</span>
+          </button>
+        `;
+      }).join('');
+
+      // Gráficos do molde e botão Ficha do Equipamento
+      renderMoldCharts(mold);
+      renderDatasheetButton(mold);
+
+      // Histórico de Ocorrências associadas
+      const filteredOccs = occurrences.filter(o => o.moldId === selectedMoldId);
+      document.getElementById('occurrence-badge-count').innerText = filteredOccs.length;
+
+      const occurrencesList = document.getElementById('occurrences-list-container');
+      occurrencesList.innerHTML = '';
+
+      if (filteredOccs.length === 0) {
+        occurrencesList.innerHTML = `
+          <div class="bg-white rounded-xl p-8 text-center border-2 border-dashed border-slate-200 text-slate-500">
+            <p class="font-semibold text-slate-700 mb-1">Nenhuma ocorrência registrada para este molde</p>
+            <p class="text-xs mb-4">Clique no botão "Registrar Nova Ocorrência" acima para preencher os dados de produção do molde.</p>
+          </div>
+        `;
+        return;
+      }
+
+      filteredOccs.forEach(occ => {
+        const item = document.createElement('div');
+        item.className = "bg-white rounded-xl p-5 shadow-sm border border-slate-200 hover:border-blue-200 transition-all";
+        if (occ._lite) item.dataset.lazyOccId = occ.id;
+        const imgs = Array.isArray(occ.images) && occ.images.length > 0
+          ? occ.images
+          : (occ.image ? [occ.image] : []);
+        const imagesHtml = occ._lite
+          ? `<div class="h-28 w-full bg-slate-100 rounded-lg border border-slate-200 flex items-center justify-center text-[10px] text-slate-500 animate-pulse">Carregando evidências ao aproximar...</div>`
+          : imgs.length === 0
+          ? `<div class="h-28 w-full bg-slate-100 rounded-lg border border-dashed border-slate-200 flex items-center justify-center text-[10px] text-slate-400">Sem imagem</div>`
+          : `<div class="grid grid-cols-2 gap-2">` + imgs.map(src => `
+              <div
+                class="h-20 w-full bg-slate-100 rounded-lg overflow-hidden shadow-inner border border-slate-200 relative group cursor-zoom-in"
+                onclick="openLightbox('${src}')"
+              >
+                <img src="${src}" alt="Evidência da ocorrência" loading="lazy" decoding="async" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+              </div>
+            `).join('') + `</div>`;
+        item.innerHTML = `
+          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-100 pb-3 mb-4">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="bg-blue-900 text-white text-[11px] font-bold px-2 py-0.5 rounded flex items-center gap-1">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+                <span>${occ.machine}</span>
+              </span>
+              <span class="bg-orange-100 text-orange-950 text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-orange-200 flex items-center gap-1">
+                ⚠️ <span>${occ.defectType}</span>
+              </span>
+            </div>
+            <div class="flex items-center gap-1 text-slate-500 text-xs font-semibold">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+              <span>${formatDateToPT(occ.date)}</span>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="md:col-span-3 space-y-2">
+              <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Descrição do Ocorrido</h4>
+              <p class="text-slate-700 text-sm leading-relaxed whitespace-pre-wrap break-words">${formatDescription(occ.description)}</p>
+            </div>
+
+            <div class="md:col-span-1">
+              <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Fotos Evidência (${imgs.length})</h4>
+              ${imagesHtml}
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-50">
+            ${occ.updatedAt ? `<span class="text-[11px] text-slate-400 italic mr-auto self-center">Última alteração: ${new Date(occ.updatedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>` : ''}
+            <button
+              onclick="openEditOccurrenceModal('${occ.id}')"
+              class="text-xs text-blue-600 hover:text-blue-800 font-semibold flex items-center gap-1 transition"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+              Editar
+            </button>
+            <button
+              onclick="askDeleteOccurrence('${occ.id}')"
+              class="text-xs text-red-500 hover:text-red-700 font-semibold flex items-center gap-1 transition"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+              Excluir Registro
+            </button>
+          </div>
+        `;
+        occurrencesList.appendChild(item);
+      });
+      scheduleOccurrenceHydration();
+    }
+
+    // ================= CONTROLO DE NAVEGAÇÃO ENTRE ECRÃS =================
+
+    function navigateToDetail(moldId) {
+      selectedMoldId = moldId;
+      document.getElementById('screen-list').classList.add('hidden');
+      document.getElementById('screen-detail').classList.remove('hidden');
+      renderDetailScreen();
+      try { hydrateMoldAndOccurrences(moldId); } catch (e) {}
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function goBackToList() {
+      selectedMoldId = null;
+      document.getElementById('screen-detail').classList.add('hidden');
+      document.getElementById('screen-list').classList.remove('hidden');
+      renderMoldsGrid();
+    }
+
+    function handleSearch(val) {
+      searchQuery = val;
+      currentPage = 1;
+      renderMoldsGrid();
+    }
+
+    // ================= CONTROLADORES DE MODAIS =================
+
+    // Modal de Novo Molde
+    function openNewMoldModal() {
+      if (!requireAuth()) return;
+      editingMoldId = null;
+      document.getElementById('new-mold-modal-title-text').innerText = 'Cadastrar Novo Molde';
+      document.getElementById('new-mold-submit-btn').innerText = 'Cadastrar Molde';
+      document.getElementById('new-mold-name').value = '';
+      clearNewMoldImage();
+      draftMoldTags = [];
+      renderDraftTags();
+      document.getElementById('modal-new-mold').classList.remove('hidden');
+    }
+
+    // Abre o modal em modo de edição preenchendo dados do molde existente
+    async function openEditMoldModal(moldId) {
+      if (!requireAuth()) return;
+      let mold = molds.find(m => m.id === moldId);
+      if (!mold) return;
+      if (mold._lite) {
+        try { mold = (await hydrateMoldFull(moldId)) || mold; } catch {}
+      }
+      editingMoldId = moldId;
+      document.getElementById('new-mold-modal-title-text').innerText = 'Editar Molde';
+      document.getElementById('new-mold-submit-btn').innerText = 'Salvar Alterações';
+      document.getElementById('new-mold-name').value = mold.name;
+
+      // Pré-carrega as imagens atuais como antevisão
+      const existing = getMoldImages(mold);
+      newMoldImages = existing.map((src, i) => ({
+        data: src,
+        thumbnail: i === 0 ? (mold.thumbnail || src) : '',
+        name: (i === 0 && mold.imageName) ? mold.imageName : `imagem_${i+1}.png`,
+      }));
+      renderNewMoldPreviewGrid();
+
+      // Clona as tags atuais para edição (incluindo PDF anexado)
+      draftMoldTags = (mold.tags || []).map(t => ({
+        text: t.text,
+        color: t.color,
+        ...(t.pdf ? { pdf: { data: t.pdf.data, name: t.pdf.name } } : {}),
+      }));
+      renderDraftTags();
+      document.getElementById('modal-new-mold').classList.remove('hidden');
+    }
+
+    function closeNewMoldModal() {
+      document.getElementById('modal-new-mold').classList.add('hidden');
+      editingMoldId = null;
+    }
+
+    // Modal de Ocorrência
+    function openNewOccurrenceModal() {
+      if (!requireAuth()) return;
+      const mold = molds.find(m => m.id === selectedMoldId);
+      if (!mold) return;
+
+      editingOccurrenceId = null;
+      document.getElementById('occ-modal-title-text').innerText = 'Registrar Ocorrência:';
+      document.getElementById('occ-submit-btn').innerText = 'Salvar Ocorrência';
+      document.getElementById('occ-modal-mold-name').innerText = mold.name;
+      document.getElementById('occ-machine').value = '';
+      document.getElementById('occ-date').value = new Date().toISOString().split('T')[0];
+      document.getElementById('occ-description').value = '';
+      clearOccurrenceImage();
+
+      // Forçar reset para o modo de selecção comum
+      isCustomDefectMode = false;
+      document.getElementById('occ-custom-defect-wrapper').classList.add('hidden');
+      document.getElementById('occ-select-defect-wrapper').classList.remove('hidden');
+      document.getElementById('occ-toggle-defect-btn').innerText = '+ Nova Nomenclatura';
+
+      // Preencher o select de defeitos com as tags existentes do molde
+      const select = document.getElementById('occ-defect-select');
+      select.innerHTML = '<option value="">Selecione um Defeito Cadastrado</option>';
+      (mold.tags || []).forEach(tag => {
+        select.innerHTML += `<option value="${tag.text}">${tag.text}</option>`;
+      });
+      select.innerHTML += '<option value="Geral/Não listado">Geral / Não listado</option>';
+
+      document.getElementById('modal-new-occurrence').classList.remove('hidden');
+    }
+
+    // Abre o modal em modo de edição, preenchendo com os dados existentes
+    async function openEditOccurrenceModal(occId) {
+      if (!requireAuth()) return;
+      let occ = occurrences.find(o => o.id === occId);
+      if (!occ) return;
+      if (occ._lite) {
+        try { occ = (await hydrateOccurrenceFull(occId)) || occ; } catch {}
+      }
+      const mold = molds.find(m => m.id === occ.moldId);
+      if (!mold) return;
+
+      editingOccurrenceId = occId;
+      document.getElementById('occ-modal-title-text').innerText = 'Editar Ocorrência:';
+      document.getElementById('occ-submit-btn').innerText = 'Salvar Alterações';
+      document.getElementById('occ-modal-mold-name').innerText = mold.name;
+      document.getElementById('occ-machine').value = occ.machine || '';
+      document.getElementById('occ-date').value = occ.date || new Date().toISOString().split('T')[0];
+      document.getElementById('occ-description').value = occ.description || '';
+
+      // Pré-carrega imagens existentes
+      occImages = Array.isArray(occ.images) && occ.images.length > 0
+        ? [...occ.images]
+        : (occ.image ? [occ.image] : []);
+      renderOccPreviewGrid();
+
+      // Reset para modo de seleção comum
+      isCustomDefectMode = false;
+      document.getElementById('occ-custom-defect-wrapper').classList.add('hidden');
+      document.getElementById('occ-select-defect-wrapper').classList.remove('hidden');
+      document.getElementById('occ-toggle-defect-btn').innerText = '+ Nova Nomenclatura';
+
+      // Preencher o select de defeitos
+      const select = document.getElementById('occ-defect-select');
+      select.innerHTML = '<option value="">Selecione um Defeito Cadastrado</option>';
+      (mold.tags || []).forEach(tag => {
+        select.innerHTML += `<option value="${tag.text}" ${tag.text === occ.defectType ? 'selected' : ''}>${tag.text}</option>`;
+      });
+      const matches = (mold.tags || []).some(t => t.text === occ.defectType);
+      if (!matches && occ.defectType) {
+        select.innerHTML += `<option value="${occ.defectType}" selected>${occ.defectType}</option>`;
+      }
+      select.innerHTML += '<option value="Geral/Não listado">Geral / Não listado</option>';
+
+      document.getElementById('modal-new-occurrence').classList.remove('hidden');
+    }
+
+    function closeNewOccurrenceModal() {
+      document.getElementById('modal-new-occurrence').classList.add('hidden');
+      editingOccurrenceId = null;
+    }
+
+    // Lightbox de Imagem
+    function openLightbox(imgSrc) {
+      document.getElementById('lightbox-img').src = imgSrc;
+      document.getElementById('modal-lightbox').classList.remove('hidden');
+    }
+
+    function closeLightbox() {
+      document.getElementById('modal-lightbox').classList.add('hidden');
+    }
+
+    // Modal de Confirmação Customizado
+    function openConfirmModal(title, message, confirmCallback) {
+      document.getElementById('confirm-title').innerText = title;
+      document.getElementById('confirm-message').innerText = message;
+      
+      const submitBtn = document.getElementById('confirm-submit-btn');
+      // Limpar event listeners antigos
+      const newSubmitBtn = submitBtn.cloneNode(true);
+      submitBtn.parentNode.replaceChild(newSubmitBtn, submitBtn);
+
+      newSubmitBtn.addEventListener('click', function() {
+        confirmCallback();
+        closeConfirmModal();
+      });
+
+      document.getElementById('modal-confirm').classList.remove('hidden');
+    }
+
+    function closeConfirmModal() {
+      document.getElementById('modal-confirm').classList.add('hidden');
+    }
+
+    // ================= PROCESSAMENTO DE IMAGEM (UPLOADS) =================
+
+    // Helper: devolve sempre um array com até 3 imagens do molde (compat. com `image` antigo)
+    function getMoldImages(mold) {
+      if (!mold) return [];
+      if (Array.isArray(mold.images) && mold.images.length > 0) return mold.images.slice(0, 3);
+      return mold.image ? [mold.image] : [];
+    }
+
+    function readFileAsDataURL(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function compressImageFile(file, options = {}) {
+      const maxSize = options.maxSize || 1200;
+      const quality = options.quality || 0.72;
+      if (!file || !file.type || !file.type.startsWith('image/')) return readFileAsDataURL(file);
+      const originalDataUrl = await readFileAsDataURL(file);
+      try {
+        const img = await new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = reject;
+          image.src = originalDataUrl;
+        });
+        const scale = Math.min(1, maxSize / Math.max(img.width || maxSize, img.height || maxSize));
+        if (scale >= 1 && file.size < 450 * 1024) return originalDataUrl;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round((img.width || maxSize) * scale));
+        canvas.height = Math.max(1, Math.round((img.height || maxSize) * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', quality);
+      } catch (e) {
+        console.warn('Falha ao otimizar imagem, usando original:', e);
+        return originalDataUrl;
+      }
+    }
+
+    async function createThumbnailFromSource(source, maxSize = 320, quality = 0.58) {
+      if (!source) return '';
+      if (!isDataUrl(source)) return source;
+      try {
+        const img = await new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = reject;
+          image.src = source;
+        });
+        const scale = Math.min(1, maxSize / Math.max(img.width || maxSize, img.height || maxSize));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round((img.width || maxSize) * scale));
+        canvas.height = Math.max(1, Math.round((img.height || maxSize) * scale));
+        const ctx = canvas.getContext('2d', { alpha: false });
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', quality);
+      } catch (error) {
+        console.warn('Falha ao criar miniatura:', error);
+        return '';
+      }
+    }
+
+    async function ensureMoldThumbnail(mold) {
+      if (!mold || mold.thumbnail) return false;
+      const primary = getMoldImages(mold)[0] || mold.image || '';
+      if (!primary) return false;
+      const thumbnail = await createThumbnailFromSource(primary);
+      if (!thumbnail) return false;
+      mold.thumbnail = thumbnail;
+      mold.updatedAt = mold.updatedAt || new Date().toISOString();
+      return true;
+    }
+
+    // Processamento genérico de fotos. Mantém a ordem dos ficheiros e cria miniatura leve.
+    async function processImageUpload(event, type) {
+      const files = Array.from(event.target.files || []);
+      event.target.value = '';
+      if (files.length === 0) return;
+
+      try {
+        if (type === 'mold') {
+          const remaining = Math.max(0, 3 - newMoldImages.length);
+          if (remaining === 0) {
+            showToast('Limite de 3 imagens por molde atingido.');
+            return;
+          }
+          const processed = await Promise.all(files.slice(0, remaining).map(async (file) => {
+            const data = await compressImageFile(file, { maxSize: 1200, quality: 0.72 });
+            const thumbnail = await createThumbnailFromSource(data);
+            return { data, thumbnail, name: file.name };
+          }));
+          newMoldImages.push(...processed);
+          renderNewMoldPreviewGrid();
+        } else if (type === 'occurrence') {
+          const processed = await Promise.all(files.map((file) =>
+            compressImageFile(file, { maxSize: 1000, quality: 0.68 })
+          ));
+          occImages.push(...processed);
+          renderOccPreviewGrid();
+        }
+      } catch (error) {
+        console.warn('Falha ao processar imagens:', error);
+        showToast('Não foi possível processar uma das imagens.');
+      }
+    }
+
+    function clearNewMoldImage() {
+      newMoldImages = [];
+      renderNewMoldPreviewGrid();
+    }
+
+    function removeNewMoldImage(idx) {
+      newMoldImages.splice(idx, 1);
+      renderNewMoldPreviewGrid();
+    }
+
+    function renderNewMoldPreviewGrid() {
+      const grid = document.getElementById('new-mold-preview-grid');
+      if (!grid) return;
+      grid.innerHTML = '';
+      newMoldImages.forEach((img, idx) => {
+        const box = document.createElement('div');
+        box.className = 'relative rounded-lg overflow-hidden border border-slate-200 h-24 bg-slate-100';
+        box.innerHTML = `
+          <img src="${img.data}" alt="${img.name || 'Imagem'}" loading="lazy" decoding="async" class="w-full h-full object-cover" />
+          ${idx === 0 ? '<span class="absolute top-1 left-1 bg-blue-900/80 text-white text-[9px] font-bold px-1.5 py-0.5 rounded">CAPA</span>' : ''}
+          <button type="button" onclick="removeNewMoldImage(${idx})" class="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full shadow-md" title="Remover imagem">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        `;
+        grid.appendChild(box);
+      });
+    }
+
+    // Limpar todas as imagens da ocorrência
+    function clearOccurrenceImage() {
+      occImages = [];
+      renderOccPreviewGrid();
+    }
+
+    // Remove uma imagem específica do rascunho de ocorrência
+    function removeOccImage(index) {
+      occImages.splice(index, 1);
+      renderOccPreviewGrid();
+    }
+
+    // Re-renderiza as antevisões de imagens da ocorrência
+    function renderOccPreviewGrid() {
+      const grid = document.getElementById('occ-preview-grid');
+      if (!grid) return;
+      grid.innerHTML = '';
+      occImages.forEach((src, idx) => {
+        const box = document.createElement('div');
+        box.className = 'relative rounded-lg overflow-hidden border border-slate-200 h-24 bg-slate-100';
+        box.innerHTML = `
+          <img src="${src}" alt="Antevisão" class="w-full h-full object-cover" />
+          <button type="button" onclick="removeOccImage(${idx})" class="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white p-1 rounded-full shadow-md" title="Remover imagem">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        `;
+        grid.appendChild(box);
+      });
+    }
+
+    // ================= GESTÃO DE DEFEITOS/TAGS NOVO MOLDE =================
+
+    function addCustomTagToDraft() {
+      const input = document.getElementById('new-mold-tag-text');
+      const select = document.getElementById('new-mold-tag-color');
+      const text = input.value.trim();
+      
+      if (!text) return;
+
+      let colorClass = 'bg-slate-700 text-white';
+      if (select.value === 'orange') {
+        colorClass = 'bg-orange-600 text-white font-semibold';
+      }
+
+      const newTag = { text: text, color: colorClass };
+      // Herda automaticamente o PDF já compartilhado por outras tags de mesmo nome
+      const shared = findSharedTagPdf(text);
+      if (shared) newTag.pdf = shared;
+      draftMoldTags.push(newTag);
+      input.value = '';
+      renderDraftTags();
+    }
+
+    // Elimina tag do rascunho
+    function removeDraftTag(index) {
+      draftMoldTags.splice(index, 1);
+      renderDraftTags();
+    }
+
+    function renderDraftTags() {
+      const container = document.getElementById('new-mold-tags-container');
+      container.innerHTML = '';
+
+      if (draftMoldTags.length === 0) {
+        container.innerHTML = '<span class="text-[10px] text-slate-400 italic">Nenhuma tag adicionada. O molde será criado sem defeitos a monitorar.</span>';
+        return;
+      }
+
+      draftMoldTags.forEach((tag, idx) => {
+        const hasPdf = !!(tag.pdf && tag.pdf.data);
+        const pill = document.createElement('span');
+        pill.className = `text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1.5 font-semibold ${tag.color} ${hasPdf ? 'ring-1 ring-orange-400/70' : ''}`;
+        pill.innerHTML = `
+          <span>${tag.text}</span>
+          ${hasPdf ? `<button type="button" title="Ver PDF: ${tag.pdf.name || ''}" onclick="openPdfViewer(draftMoldTags[${idx}].pdf.data, draftMoldTags[${idx}].pdf.name || 'documento.pdf')" class="hover:opacity-80"><svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg></button>` : ''}
+          <label class="cursor-pointer hover:opacity-80" title="${hasPdf ? 'Substituir PDF' : 'Anexar PDF'}">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+            <input type="file" accept="application/pdf" class="hidden" onchange="attachPdfToDraftTag(${idx}, event)" />
+          </label>
+          ${hasPdf ? `<button type="button" title="Remover PDF" onclick="removeDraftTagPdf(${idx})" class="hover:opacity-80"><svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7"/></svg></button>` : ''}
+          <button type="button" onclick="removeDraftTag(${idx})" class="hover:text-red-300 font-bold text-xs" title="Remover tag">&times;</button>
+        `;
+        container.appendChild(pill);
+      });
+    }
+
+    // Anexa um PDF a uma tag em rascunho (data URL)
+    function attachPdfToDraftTag(idx, event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+        showToast('Selecione um ficheiro PDF.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = function() {
+        if (!draftMoldTags[idx]) return;
+        const pdfObj = { data: reader.result, name: file.name };
+        draftMoldTags[idx].pdf = pdfObj;
+        // Compartilha o PDF com todas as tags de mesmo nome em outros moldes
+        propagateTagPdfByName(draftMoldTags[idx].text, pdfObj);
+        renderDraftTags();
+        showToast('PDF anexado e compartilhado com tags de mesmo nome.');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function removeDraftTagPdf(idx) {
+      if (!draftMoldTags[idx]) return;
+      const tagText = draftMoldTags[idx].text;
+      delete draftMoldTags[idx].pdf;
+      propagateTagPdfByName(tagText, null);
+      renderDraftTags();
+      showToast('PDF removido de todas as tags de mesmo nome.');
+    }
+
+    // ================= VISUALIZADOR DE PDF =================
+
+    function openPdfViewer(dataUrl, name) {
+      if (!dataUrl) { showToast('Nenhum PDF anexado.'); return; }
+      const m = document.getElementById('modal-pdf');
+      document.getElementById('pdf-viewer-frame').src = dataUrl;
+      document.getElementById('pdf-viewer-title').textContent = name || 'Documento PDF';
+      const dl = document.getElementById('pdf-viewer-download');
+      dl.href = dataUrl;
+      dl.setAttribute('download', name || 'documento.pdf');
+      m.classList.remove('hidden');
+      m.classList.add('flex', 'flex-col');
+    }
+
+    function closePdfViewer() {
+      const m = document.getElementById('modal-pdf');
+      m.classList.add('hidden');
+      m.classList.remove('flex', 'flex-col');
+      document.getElementById('pdf-viewer-frame').src = '';
+    }
+
+    // Abre o PDF anexado a uma tag de um molde
+    async function openTagPdf(moldId, tagIdx) {
+      let mold = molds.find(m => m.id === moldId);
+      if (!mold) return;
+      let tag = mold.tags && mold.tags[tagIdx];
+      if (!tag) return;
+      // Se o molde ainda está no modo leve, hidrata para obter o PDF real
+      if (mold._lite || (tag.pdf && tag.pdf.data === '__lite__')) {
+        try { mold = (await hydrateMoldFull(moldId)) || mold; } catch {}
+        tag = mold.tags && mold.tags[tagIdx];
+        if (!tag) return;
+      }
+      if (tag.pdf && tag.pdf.data && tag.pdf.data !== '__lite__') {
+        openPdfViewer(tag.pdf.data, tag.pdf.name);
+      } else {
+        showToast(`Sem PDF anexado em "${tag.text}". Edite o molde para anexar.`);
+      }
+    }
+
+    // ================= GRÁFICOS DO MOLDE =================
+    const CHART_META = {
+      defects: { label: 'Principais Defeitos', icon: '⚠️' },
+      swaps:   { label: 'Principais Trocas de Moldes', icon: '🔁' },
+    };
+
+    function renderMoldCharts(mold) {
+      const container = document.getElementById('detail-charts');
+      if (!container) return;
+      const charts = mold.charts || {};
+      const authed = isAuthed();
+      container.innerHTML = Object.keys(CHART_META).map(kind => {
+        const c = charts[kind];
+        const meta = CHART_META[kind];
+        if (c && c.data && c.data !== LITE_PDF_MARKER) {
+          const ts = c.updatedAt ? new Date(c.updatedAt).toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '';
+          return `
+            <div class="relative group rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
+              <div class="px-3 py-2 flex items-center justify-between bg-white border-b border-slate-100">
+                <span class="text-xs font-bold text-slate-700 flex items-center gap-1.5">${meta.icon} ${meta.label}</span>
+                ${authed ? `
+                  <div class="flex items-center gap-1">
+                    <button onclick="attachMoldChart('${kind}')" class="text-[11px] px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold">Trocar</button>
+                    <button onclick="removeMoldChart('${kind}')" class="text-[11px] px-2 py-0.5 rounded bg-red-50 hover:bg-red-100 text-red-600 font-semibold">Remover</button>
+                  </div>` : ''}
+              </div>
+              <div class="aspect-video bg-white flex items-center justify-center cursor-zoom-in" onclick="openLightbox('${c.data}')">
+                <img src="${c.data}" alt="${meta.label}" class="w-full h-full object-contain" />
+              </div>
+              ${ts ? `<div class="px-3 py-1.5 text-[11px] text-slate-500 italic bg-white border-t border-slate-100 text-right">Última atualização: ${ts}</div>` : ''}
+            </div>`;
+        }
+        return `
+          <div class="rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 p-4 flex flex-col items-center justify-center text-center aspect-video">
+            <span class="text-2xl mb-1">${meta.icon}</span>
+            <p class="text-xs font-semibold text-slate-700 mb-2">${meta.label}</p>
+            <button onclick="attachMoldChart('${kind}')" class="text-[11px] px-3 py-1.5 rounded-md bg-orange-500 hover:bg-orange-600 text-white font-semibold shadow-sm">
+              Anexar imagem
+            </button>
+          </div>`;
+      }).join('');
+    }
+
+    function attachMoldChart(kind) {
+      if (!requireAuth()) return;
+      if (!selectedMoldId) return;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        try {
+          const mold = molds.find(m => m.id === selectedMoldId);
+          if (!mold) return;
+          mold.charts = mold.charts || {};
+          const stamp = new Date().toISOString();
+          const data = await compressImageFile(file, { maxSize: 1200, quality: 0.74 });
+          mold.charts[kind] = { data, name: file.name, updatedAt: stamp };
+          mold.updatedAt = stamp;
+          saveState();
+          cloudUpsertMold(mold);
+          renderMoldCharts(mold);
+          showToast('Gráfico anexado.');
+        } catch (err) {
+          console.warn('Falha ao anexar gráfico:', err);
+          showToast('Não foi possível anexar o gráfico.');
+        }
+      };
+      input.click();
+    }
+
+    function removeMoldChart(kind) {
+      if (!requireAuth()) return;
+      const mold = molds.find(m => m.id === selectedMoldId);
+      if (!mold || !mold.charts) return;
+      delete mold.charts[kind];
+      mold.updatedAt = new Date().toISOString();
+      saveState();
+      cloudUpsertMold(mold);
+      renderMoldCharts(mold);
+      showToast('Gráfico removido.');
+    }
+
+    // ================= FICHA DO EQUIPAMENTO =================
+    function renderDatasheetButton(mold) {
+      const lbl = document.getElementById('btn-datasheet-label');
+      const rm = document.getElementById('btn-datasheet-remove');
+      const has = !!(mold.datasheet && mold.datasheet.data);
+      if (lbl) lbl.textContent = has ? 'Ver Ficha do Equipamento' : 'Anexar Ficha do Equipamento';
+      if (rm) rm.classList.toggle('hidden', !(has && isAuthed()));
+    }
+
+    function handleDatasheetClick() {
+      const mold = molds.find(m => m.id === selectedMoldId);
+      if (!mold) return;
+      if (mold.datasheet && mold.datasheet.data) {
+        const ds = mold.datasheet;
+        if ((ds.type || '').startsWith('image/')) {
+          openLightbox(ds.data);
+        } else {
+          openPdfViewer(ds.data, ds.name || 'ficha-equipamento.pdf');
+        }
+        return;
+      }
+      if (!requireAuth()) return;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'application/pdf,image/*';
+      input.onchange = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        try {
+          const data = file.type && file.type.startsWith('image/')
+            ? await compressImageFile(file, { maxSize: 1400, quality: 0.75 })
+            : await readFileAsDataURL(file);
+          mold.datasheet = { data, name: file.name, type: file.type };
+          mold.updatedAt = new Date().toISOString();
+          saveState();
+          cloudUpsertMold(mold);
+          renderDatasheetButton(mold);
+          showToast('Ficha do equipamento anexada.');
+        } catch (err) {
+          console.warn('Falha ao anexar ficha:', err);
+          showToast('Não foi possível anexar a ficha.');
+        }
+      };
+      input.click();
+    }
+
+    function removeMoldDatasheet() {
+      if (!requireAuth()) return;
+      const mold = molds.find(m => m.id === selectedMoldId);
+      if (!mold) return;
+      mold.datasheet = null;
+      mold.updatedAt = new Date().toISOString();
+      saveState();
+      cloudUpsertMold(mold);
+      renderDatasheetButton(mold);
+      showToast('Ficha removida.');
+    }
+
+    // ================= SUBMISSÃO DE FORMULÁRIOS =================
+
+    // Gravação de um novo molde
+    function handleCreateMold(event) {
+      event.preventDefault();
+      const name = document.getElementById('new-mold-name').value.trim();
+      if (!name) return;
+
+      // Modo de edição: atualiza o molde existente
+      if (editingMoldId) {
+        const mold = molds.find(m => m.id === editingMoldId);
+        if (mold) {
+          mold.name = name.toUpperCase();
+          if (newMoldImages.length > 0) {
+            mold.images = newMoldImages.map(i => i.data).slice(0, 3);
+            mold.image = mold.images[0];
+            mold.thumbnail = newMoldImages[0].thumbnail || mold.thumbnail || mold.image;
+            mold.imageName = newMoldImages[0].name || mold.imageName;
+          } else {
+            mold.images = [];
+            mold.image = '';
+            mold.thumbnail = '';
+          }
+          mold.tags = [...draftMoldTags];
+          mold.updatedAt = new Date().toISOString();
+          saveState();
+          cloudUpsertMold(mold);
+        }
+        const wasSelected = selectedMoldId === editingMoldId;
+        closeNewMoldModal();
+        if (wasSelected) renderDetailScreen();
+        renderMoldsGrid();
+        return;
+      }
+
+      const id = 'mb-' + Date.now();
+      const imagesArr = newMoldImages.map(i => i.data).slice(0, 3);
+      const newMold = {
+        id: id,
+        name: cleanText(name, 100).toUpperCase(),
+        images: imagesArr,
+        image: imagesArr[0] || '',
+        thumbnail: (newMoldImages[0] && newMoldImages[0].thumbnail) || imagesArr[0] || '',
+        imageName: (newMoldImages[0] && newMoldImages[0].name) || 'imagem_molde.png',
+        tags: [...draftMoldTags],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      molds.unshift(newMold);
+      saveState();
+      cloudUpsertMold(newMold);
+      closeNewMoldModal();
+      renderMoldsGrid();
+    }
+
+    // Alternar formulário para criação de nomenclatura de defeito na ocorrência
+    function toggleCustomDefectForm() {
+      isCustomDefectMode = !isCustomDefectMode;
+      const selectWrapper = document.getElementById('occ-select-defect-wrapper');
+      const customWrapper = document.getElementById('occ-custom-defect-wrapper');
+      const toggleBtn = document.getElementById('occ-toggle-defect-btn');
+
+      if (isCustomDefectMode) {
+        selectWrapper.classList.add('hidden');
+        customWrapper.classList.remove('hidden');
+        toggleBtn.innerText = 'Selecionar Existente';
+        document.getElementById('occ-custom-defect-name').required = true;
+      } else {
+        selectWrapper.classList.remove('hidden');
+        customWrapper.classList.add('hidden');
+        toggleBtn.innerText = '+ Nova Nomenclatura';
+        document.getElementById('occ-custom-defect-name').required = false;
+        document.getElementById('occ-custom-defect-name').value = '';
+      }
+    }
+
+    // Gravação de uma ocorrência
+    function handleCreateOccurrence(event) {
+      event.preventDefault();
+
+      const machine = document.getElementById('occ-machine').value.trim();
+      const date = document.getElementById('occ-date').value;
+      const description = document.getElementById('occ-description').value.trim();
+      let defectType = document.getElementById('occ-defect-select').value;
+
+      if (!machine || !description) return;
+
+      // Se estiver em modo de criação dinâmica de defeito
+      if (isCustomDefectMode) {
+        const customName = document.getElementById('occ-custom-defect-name').value.trim();
+        if (customName) {
+          defectType = customName;
+
+          // Se marcou para vincular a tag permanentemente ao molde
+          const saveToTags = document.getElementById('occ-save-to-tags').checked;
+          if (saveToTags && selectedMoldId) {
+            const mold = molds.find(m => m.id === selectedMoldId);
+            if (mold) {
+              const exists = mold.tags.some(t => t.text.toLowerCase() === customName.toLowerCase());
+              if (!exists) {
+                const colorValue = document.getElementById('occ-custom-defect-color').value;
+                mold.tags.push({ text: customName, color: colorValue });
+                mold.updatedAt = new Date().toISOString();
+              }
+            }
+          }
+        }
+      }
+
+      const images = [...occImages];
+      const primaryImage = images[0] || '';
+
+      if (editingOccurrenceId) {
+        const occ = occurrences.find(o => o.id === editingOccurrenceId);
+        if (occ) {
+          occ.machine = machine;
+          occ.date = date;
+          occ.description = description;
+          occ.defectType = defectType || occ.defectType || 'Geral';
+          occ.images = images;
+          occ.image = primaryImage || occ.image;
+          occ.updatedAt = new Date().toISOString();
+          saveState();
+          cloudUpsertOccurrence(occ);
+        }
+        if (isCustomDefectMode && selectedMoldId) {
+          const mold = molds.find(m => m.id === selectedMoldId);
+          if (mold) cloudUpsertMold(mold);
+        }
+        closeNewOccurrenceModal();
+        renderDetailScreen();
+        return;
+      }
+
+      const newOcc = {
+        id: 'occ-' + Date.now(),
+        moldId: selectedMoldId,
+        machine: machine,
+        date: date,
+        description: description,
+        images: images,
+        image: primaryImage,
+        defectType: defectType || 'Geral',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      const previousOccurrenceCount = countOccurrences(selectedMoldId);
+      occurrences.unshift(newOcc);
+      const selectedMold = molds.find((item) => item.id === selectedMoldId);
+      if (selectedMold) selectedMold.occurrenceCount = previousOccurrenceCount + 1;
+      saveState();
+      cloudUpsertOccurrence(newOcc);
+      if (isCustomDefectMode && selectedMoldId) {
+        const mold = molds.find(m => m.id === selectedMoldId);
+        if (mold) cloudUpsertMold(mold);
+      }
+      closeNewOccurrenceModal();
+      renderDetailScreen();
+    }
+
+    // ================= APAGAR ITENS (DIÁLOGOS SEGUROS) =================
+
+    function askDeleteMold(moldId) {
+      if (!requireAuth()) return;
+      const mold = molds.find(m => m.id === moldId);
+      if (!mold) return;
+
+      openConfirmModal(
+        'Excluir Molde Permanentemente?',
+        `Esta ação removerá o molde ${mold.name} e todos os seus históricos de ocorrência de forma irreversível. Deseja continuar?`,
+        function() {
+          molds = molds.filter(m => m.id !== moldId);
+          occurrences = occurrences.filter(o => o.moldId !== moldId);
+          saveState();
+          cloudDeleteMold(moldId);
+          if (selectedMoldId === moldId) {
+            selectedMoldId = null;
+            goBackToList();
+          } else {
+            renderMoldsGrid();
+          }
+        }
+      );
+    }
+
+    function askDeleteOccurrence(occId) {
+      if (!requireAuth()) return;
+      openConfirmModal(
+        'Excluir Registro de Ocorrência?',
+        'Tem certeza de que deseja remover este registro do diário de qualidade do molde?',
+        function() {
+          const removed = occurrences.find((o) => o.id === occId);
+          const previousOccurrenceCount = removed ? countOccurrences(removed.moldId) : 0;
+          occurrences = occurrences.filter(o => o.id !== occId);
+          if (removed) {
+            const mold = molds.find((item) => item.id === removed.moldId);
+            if (mold) mold.occurrenceCount = Math.max(0, previousOccurrenceCount - 1);
+          }
+          saveState();
+          cloudDeleteOccurrence(occId);
+          renderDetailScreen();
+        }
+      );
+    }
+
+// ================= INICIALIZAÇÃO DA APLICAÇÃO =================
+async function initializeApp() {
+  loadState();
+  initializePwa(showToast);
+  updateAuthUI();
+  renderMoldsGrid();
+  await initializeAuth();
+  const synced = await cloudLoadAll();
+  if (synced) {
+    renderMoldsGrid();
+    if (selectedMoldId) await hydrateMoldAndOccurrences(selectedMoldId);
+  }
+}
+
+Object.assign(window, {
+  setSyncStatus,
+  isAuthed,
+  openLoginModal,
+  closeLoginModal,
+  handleLogin,
+  toggleAuth,
+  requireAuth,
+  updateAuthUI,
+  initializeAuth,
+  cleanText,
+  safeExistingId,
+  safeRecordId,
+  safeAssetSource,
+  normalizeTag,
+  normalizeMold,
+  normalizeOccurrence,
+  cloudLoadAll,
+  stripSyncMeta,
+  parseTime,
+  getLocalUpdatedAt,
+  mergeTagsPreservingLitePdf,
+  mergeMoldDataForCloud,
+  mergeOccurrenceDataForCloud,
+  fetchCloudMoldData,
+  fetchCloudOccurrenceData,
+  syncPendingLocalChanges,
+  recoverUnsyncedLocalChanges,
+  hydrateMoldFull,
+  hydrateOccurrenceFull,
+  loadOccurrencesLiteForMold,
+  hydrateVisibleMolds,
+  hydrateMoldAndOccurrences,
+  cloudUpsertMold,
+  cloudUpsertOccurrence,
+  cloudDeleteMold,
+  cloudDeleteOccurrence,
+  cloudReplaceAll,
+  loadState,
+  saveState,
+  isDataUrl,
+  toLiteTags,
+  toLocalCacheMold,
+  toLocalCacheOccurrence,
+  fetchAllCloudRows,
+  exportData,
+  importData,
+  showToast,
+  normTagKey,
+  propagateTagPdfByName,
+  findSharedTagPdf,
+  fallbackLogo,
+  formatDateToPT,
+  formatDescription,
+  countOccurrences,
+  renderMoldsGrid,
+  renderPagination,
+  goToPage,
+  scheduleOccurrenceHydration,
+  renderDetailScreen,
+  navigateToDetail,
+  goBackToList,
+  handleSearch,
+  openNewMoldModal,
+  openEditMoldModal,
+  closeNewMoldModal,
+  openNewOccurrenceModal,
+  openEditOccurrenceModal,
+  closeNewOccurrenceModal,
+  openLightbox,
+  closeLightbox,
+  openConfirmModal,
+  closeConfirmModal,
+  getMoldImages,
+  readFileAsDataURL,
+  compressImageFile,
+  createThumbnailFromSource,
+  ensureMoldThumbnail,
+  processImageUpload,
+  clearNewMoldImage,
+  removeNewMoldImage,
+  renderNewMoldPreviewGrid,
+  clearOccurrenceImage,
+  removeOccImage,
+  renderOccPreviewGrid,
+  addCustomTagToDraft,
+  removeDraftTag,
+  renderDraftTags,
+  attachPdfToDraftTag,
+  removeDraftTagPdf,
+  openPdfViewer,
+  closePdfViewer,
+  openTagPdf,
+  renderMoldCharts,
+  attachMoldChart,
+  removeMoldChart,
+  renderDatasheetButton,
+  handleDatasheetClick,
+  removeMoldDatasheet,
+  handleCreateMold,
+  toggleCustomDefectForm,
+  handleCreateOccurrence,
+  askDeleteMold,
+  askDeleteOccurrence
+});
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeApp, { once: true });
+} else {
+  initializeApp();
+}

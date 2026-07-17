@@ -1,0 +1,59 @@
+{
+  "name": "diario-de-moldes-desktop",
+  "version": "2.2.0",
+  "private": true,
+  "description": "Aplicativo desktop do Diário de Moldes - WMoldes",
+  "main": "main.cjs",
+  "scripts": {
+    "prepare:app": "node scripts/prepare.mjs",
+    "start": "npm run prepare:app && electron .",
+    "pack:win": "npm run prepare:app && electron-packager . \"Diario de Moldes\" --platform=win32 --arch=x64 --out=release-portable --overwrite --icon=build/icon.ico --prune=true --asar",
+    "dist:win": "npm run prepare:app && electron-builder --win nsis portable"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.0.3",
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "br.com.wmoldes.diariodemoldes",
+    "productName": "Diário de Moldes",
+    "asar": true,
+    "directories": {
+      "output": "release-installer",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.cjs",
+      "package.json",
+      "app/**/*",
+      "build/icon.ico"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "artifactName": "Diario-de-Moldes-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Diário de Moldes",
+      "runAfterFinish": true
+    }
+  }
+}
